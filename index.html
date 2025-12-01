@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QuantGemini A-Share Analyst</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            colors: {
+              slate: {
+                850: '#151e2e',
+                900: '#0f172a',
+                950: '#020617',
+              },
+              emerald: {
+                450: '#10b981', // Bullish
+              },
+              rose: {
+                450: '#f43f5e', // Bearish
+              }
+            },
+            fontFamily: {
+              mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', "Liberation Mono", "Courier New", 'monospace'],
+            }
+          }
+        }
+      }
+    </script>
+    <style>
+      body {
+        background-color: #020617;
+        color: #f8fafc;
+      }
+      /* Custom Scrollbar for terminal look */
+      ::-webkit-scrollbar {
+        width: 8px;
+        height: 8px;
+      }
+      ::-webkit-scrollbar-track {
+        background: #0f172a; 
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #334155; 
+        border-radius: 4px;
+      }
+      ::-webkit-scrollbar-thumb:hover {
+        background: #475569; 
+      }
+
+      /* Print Styles for PDF Export */
+      @media print {
+        @page {
+          margin: 1.5cm;
+          size: A4;
+        }
+        
+        body * {
+          visibility: hidden;
+        }
+
+        #printable-report, #printable-report * {
+          visibility: visible;
+        }
+
+        #printable-report {
+          position: absolute;
+          left: 0;
+          top: 0;
+          width: 100%;
+          margin: 0;
+          padding: 0;
+          background-color: white !important;
+          color: #1e293b !important; /* slate-800 */
+          border: none !important;
+          box-shadow: none !important;
+          font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif !important;
+        }
+
+        /* Override dark mode colors for print to be legible on white paper */
+        #printable-report h1 { color: #0f172a !important; border-bottom-color: #cbd5e1 !important; }
+        #printable-report h2 { color: #2563eb !important; }
+        #printable-report strong, #printable-report b { color: #0f172a !important; }
+        
+        /* Indicators */
+        #printable-report .text-emerald-400 { color: #059669 !important; } /* Darker green */
+        #printable-report .text-rose-400 { color: #be123c !important; } /* Darker red */
+        #printable-report .text-yellow-400 { color: #d97706 !important; } /* Darker yellow */
+        #printable-report .text-blue-400 { color: #2563eb !important; } /* Darker blue */
+        #printable-report .text-slate-200, 
+        #printable-report .text-slate-300, 
+        #printable-report .text-slate-400,
+        #printable-report .text-slate-500 { color: #334155 !important; }
+
+        /* Hide disclaimer border if too faint */
+        #printable-report .border-slate-700 { border-color: #cbd5e1 !important; }
+        #printable-report .bg-slate-800\/50 { background-color: #f1f5f9 !important; border-color: #cbd5e1 !important; }
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "@google/genai": "https://aistudiocdn.com/@google/genai@^1.30.0",
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0"
+  }
+}
+</script>
+</head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>

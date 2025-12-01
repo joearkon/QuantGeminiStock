@@ -1,0 +1,5 @@
+{
+  "name": "QuantGemini A-Share Analyst",
+  "description": "An AI-powered quantitative analysis tool for A-Share stocks using Gemini 2.5 with Search Grounding to provide real-time trading insights and position management.",
+  "requestFramePermissions": []
+}
