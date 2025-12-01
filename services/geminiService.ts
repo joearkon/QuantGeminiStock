@@ -25,8 +25,11 @@ export const startStockChat = async (stockCode: string, market: Market, lang: La
   const modelId = "gemini-2.5-flash";
   const marketName = MARKET_CONFIG[lang][market];
   
-  // Get current date
+  // Get current date and time
   const now = new Date();
+  const dayOfWeek = now.getDay(); // 0 = Sun, 6 = Sat
+  const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+  
   const dateStr = now.toLocaleDateString(lang === 'en' ? 'en-US' : 'zh-CN', {
     weekday: 'long',
     year: 'numeric',
@@ -36,34 +39,57 @@ export const startStockChat = async (stockCode: string, market: Market, lang: La
     minute: '2-digit'
   });
 
+  // Calculate "Target Data Date" (e.g., if Sunday, target Friday)
+  let targetDataDate = "Today";
+  if (isWeekend) {
+      const daysToSubtract = dayOfWeek === 0 ? 2 : 1; // Sun -> -2 days (Fri), Sat -> -1 day (Fri)
+      const lastFriday = new Date(now);
+      lastFriday.setDate(now.getDate() - daysToSubtract);
+      const friStr = lastFriday.toLocaleDateString(lang === 'en' ? 'en-US' : 'zh-CN', { month: 'numeric', day: 'numeric' });
+      targetDataDate = lang === 'en' ? `Last Friday (${friStr})` : `上周五 (${friStr})`;
+  }
+
   // Base Identity
   let systemInstruction = lang === 'en' 
-    ? `Act as a senior ${marketName} Quantitative Analyst. Today is ${dateStr}. `
-    : `扮演一位资深${marketName}量化分析师。今天是 ${dateStr}。`;
+    ? `Act as a senior ${marketName} Quantitative Analyst. Current Time: ${dateStr}. `
+    : `扮演一位资深${marketName}量化分析师。当前时间: ${dateStr}。`;
 
   // Mode Specific Instructions
   if (mode === 'LIVE') {
     systemInstruction += lang === 'en'
-      ? `MODE: LIVE INTRADAY. Priority: Find the absolute LATEST REAL-TIME price. Technical indicators (MA/MACD) will be estimates based on the forming candle. Focus on intraday momentum and immediate action.`
-      : `当前模式: 实时盘中 (LIVE)。优先级: 获取绝对最新的**实时股价**。请注意今天的K线尚未收盘，技术指标(MA/MACD)基于当前价格估算。重点关注盘中动能和即时操作。`;
+      ? `MODE: LIVE INTRADAY. 
+         Priority 1: Find the absolute LATEST price for TODAY (${now.toLocaleDateString()}).
+         Priority 2: If Market is CLOSED (Weekend/Night), you MUST find the CLOSE price of ${targetDataDate}. 
+         CRITICAL: Do NOT return data older than ${targetDataDate}. Check the date on the search result.`
+      : `当前模式: 实时盘中 (LIVE)。
+         优先级 1: 获取今日 (${now.toLocaleDateString()}) 的最新实时价格。
+         优先级 2: 如果现在是休市时间（周末/晚间），你必须获取 **${targetDataDate}** 的收盘数据。
+         **关键要求**: 严禁使用比 ${targetDataDate} 更早的数据（如上周四的数据）。请仔细检查搜索结果的日期。`;
   } else {
     systemInstruction += lang === 'en'
-      ? `MODE: SNAPSHOT (CLOSE). Priority: Analyze the LAST COMPLETED TRADING DAY (Closing Data). Ignore intraday noise if the market is open. Focus on precise, finalized technical indicators from the last close.`
-      : `当前模式: 收盘快照 (SNAPSHOT)。优先级: 分析**上一个完整交易日**的收盘数据。如果当前已开盘，请忽略盘中波动，专注于基于确定的收盘价进行的精准技术面复盘。`;
+      ? `MODE: SNAPSHOT (CLOSE). Priority: Analyze the LAST COMPLETED TRADING DAY (${targetDataDate}). Focus on precise, finalized technical indicators.`
+      : `当前模式: 收盘快照 (SNAPSHOT)。优先级: 分析**上一个完整交易日 (${targetDataDate})** 的收盘数据。专注于基于确定的收盘价进行的精准技术面复盘。`;
   }
 
-  // Initial Prompt Construction
+  // Initial Prompt Construction - Optimized for freshness
   const modePromptEn = mode === 'LIVE' 
-    ? `FETCH LIVE DATA: Search for "${stockCode} live price" and "${stockCode} intraday chart".`
-    : `FETCH CLOSING DATA: Search for "${stockCode} closing price last trading day" and "${stockCode} historical data".`;
+    ? `FETCH LIVE DATA:
+       1. Search for "${stockCode} latest price" and "${stockCode} stock quote ${now.getFullYear()}".
+       2. If today is weekend, search for "${stockCode} closing price last Friday".
+       3. VERIFY the date. If the data is not from Today or ${targetDataDate}, keep searching.`
+    : `FETCH CLOSING DATA: Search for "${stockCode} closing price ${targetDataDate}" and "${stockCode} historical data".`;
 
   const modePromptZh = mode === 'LIVE'
-    ? `获取实时数据: 搜索 "${stockCode} 实时股价" 和 "${stockCode} 今日分时走势"。`
-    : `获取收盘数据: 搜索 "${stockCode} 昨日收盘价" 或 "${stockCode} 上个交易日行情"。`;
+    ? `【获取最新数据指令】:
+       1. 搜索 "${stockCode} 最新股价", "${stockCode} 东方财富", "${stockCode} 新浪财经 实时".
+       2. **必须验证日期**: 请确认数据是 **今日** 或 **${targetDataDate}** 的。
+       3. 如果搜索结果显示的是几天前的数据（例如上周四），请忽略它，继续寻找 **${targetDataDate}** (上周五) 的数据。
+       4. 如果无法获取实时数据，请明确说明使用“最近收盘价”。`
+    : `获取收盘数据: 搜索 "${stockCode} 收盘价 ${targetDataDate}" 或 "${stockCode} 历史行情"。`;
 
   const initialPrompt = lang === 'en' ? `
     Target Stock: ${stockCode}
-    Current Date: ${dateStr}
+    Current System Time: ${dateStr}
     Analysis Mode: ${mode}
     
     ACTION REQUIRED: ${modePromptEn}
@@ -72,10 +98,10 @@ export const startStockChat = async (stockCode: string, market: Market, lang: La
     
     You MUST structure your response strictly in Markdown format with the following sections:
 
-    # 📊 QUANT REPORT: ${stockCode} (${mode === 'LIVE' ? 'Intraday' : 'Closing Snapshot'})
+    # 📊 QUANT REPORT: ${stockCode} (${mode === 'LIVE' ? 'Intraday/Latest' : 'Closing Snapshot'})
 
     ## 1. Market Data Snapshot
-    (List Price, Change %, PE, Volume. **Explicitly state: "Data time: [Time/Date]"**.)
+    (List Price, Change %, PE, Volume. **CRITICAL: Explicitly state "Data Date: [YYYY-MM-DD]"** to prove freshness.)
 
     ## 2. Technical Analysis
     (Analyze MA, MACD, KDJ, Bollinger Bands. If LIVE, mention these are dynamic.)
@@ -102,8 +128,8 @@ export const startStockChat = async (stockCode: string, market: Market, lang: La
     *Disclaimer: This analysis is generated by AI for simulation purposes only.*
     ` : `
     目标股票代码: ${stockCode}
-    当前日期: ${dateStr}
-    分析模式: ${mode === 'LIVE' ? '实时盘中 (Live)' : '收盘快照 (Snapshot/Close)'}
+    当前系统时间: ${dateStr}
+    分析模式: ${mode === 'LIVE' ? '实时盘中/最新' : '收盘复盘'}
     
     关键指令: ${modePromptZh}
     
@@ -111,10 +137,10 @@ export const startStockChat = async (stockCode: string, market: Market, lang: La
     
     你必须严格按照以下 Markdown 格式组织你的回答：
 
-    # 📊 量化分析报告: ${stockCode} (${mode === 'LIVE' ? '实时盘中' : '收盘复盘'})
+    # 📊 量化分析报告: ${stockCode} (${mode === 'LIVE' ? '实时/最新' : '收盘复盘'})
 
     ## 1. 市场数据快照
-    (列出价格, 涨跌幅, PE, 成交量。**必须明确标注: "数据时间: [具体时间/日期]"**。如果是LIVE模式，强调是当前价格；如果是SNAPSHOT模式，强调是收盘价。)
+    (列出价格, 涨跌幅, PE, 成交量。**重要: 必须在第一行明确标注: "数据日期: [YYYY年MM月DD日]"** 以证明数据的时效性。如果不匹配今日或${targetDataDate}，请发出警告。)
 
     ## 2. 技术面分析
     (分析均线 MA, MACD, KDJ, 布林带。**重要: 如果是LIVE模式，请注明指标随股价变动；如果是SNAPSHOT模式，基于确定的收盘价分析。**)
