@@ -21,19 +21,31 @@ export interface ChatSessionResult {
 
 // Helper to safely initialize the client only when needed
 const getGenAIClient = () => {
-  try {
-    // Check if process is defined to avoid ReferenceError in some browser runtimes
-    if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
-      return new GoogleGenAI({ apiKey: process.env.API_KEY });
-    }
-    // If the build tool replaced process.env.API_KEY with a string, the above might be dead code,
-    // so we try the direct access pattern which is standard for the prompt requirements.
-    // However, we wrap it to be safe.
-    return new GoogleGenAI({ apiKey: process.env.API_KEY });
-  } catch (error) {
-    console.error("Gemini Client Initialization Failed:", error);
-    throw new Error("API Key configuration is missing or invalid. Please check your deployment settings.");
+  let apiKey = '';
+
+  // 1. Try standard process.env check (Safe if process exists)
+  if (typeof process !== 'undefined' && process.env) {
+    apiKey = process.env.API_KEY || '';
   }
+
+  // 2. Try direct access wrapped in try-catch to support Bundler String Replacement (e.g. Vite/Webpack define)
+  // If the bundler replaces "process.env.API_KEY" with "secret_key", this works.
+  // If not, and process is undefined, it throws ReferenceError, which we catch.
+  if (!apiKey) {
+    try {
+      // @ts-ignore - Ignore TS warning about process potentially being undefined
+      apiKey = process.env.API_KEY;
+    } catch (e) {
+      // Ignore ReferenceError: process is not defined
+    }
+  }
+
+  if (!apiKey) {
+    console.error("Gemini API Key missing. Ensure API_KEY is set in your environment variables.");
+    throw new Error("API Key is missing. Please check deployment settings (e.g., Vercel Environment Variables).");
+  }
+
+  return new GoogleGenAI({ apiKey });
 };
 
 export const startStockChat = async (stockCode: string, market: Market, lang: Language, mode: AnalysisMode): Promise<ChatSessionResult> => {
