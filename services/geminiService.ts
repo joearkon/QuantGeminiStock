@@ -1,8 +1,6 @@
 import { GoogleGenAI, Chat } from "@google/genai";
 import { AnalysisResult, Language, Market, AnalysisMode } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
 const MARKET_CONFIG = {
   en: {
     'A_SHARE': 'A-Share (Chinese Stock Market)',
@@ -20,6 +18,23 @@ export interface ChatSessionResult {
   analysis: AnalysisResult;
   chat: Chat;
 }
+
+// Helper to safely initialize the client only when needed
+const getGenAIClient = () => {
+  try {
+    // Check if process is defined to avoid ReferenceError in some browser runtimes
+    if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+      return new GoogleGenAI({ apiKey: process.env.API_KEY });
+    }
+    // If the build tool replaced process.env.API_KEY with a string, the above might be dead code,
+    // so we try the direct access pattern which is standard for the prompt requirements.
+    // However, we wrap it to be safe.
+    return new GoogleGenAI({ apiKey: process.env.API_KEY });
+  } catch (error) {
+    console.error("Gemini Client Initialization Failed:", error);
+    throw new Error("API Key configuration is missing or invalid. Please check your deployment settings.");
+  }
+};
 
 export const startStockChat = async (stockCode: string, market: Market, lang: Language, mode: AnalysisMode): Promise<ChatSessionResult> => {
   const modelId = "gemini-2.5-flash";
@@ -168,6 +183,9 @@ export const startStockChat = async (stockCode: string, market: Market, lang: La
     `;
 
   try {
+    // Initialize AI Client Here to prevent top-level crash on Vercel/Edge
+    const ai = getGenAIClient();
+    
     const chat = ai.chats.create({
       model: modelId,
       config: {
@@ -197,9 +215,9 @@ export const startStockChat = async (stockCode: string, market: Market, lang: La
   } catch (error) {
     console.error("Gemini Analysis Error:", error);
     const errorMsg = lang === 'en' 
-      ? "Failed to analyze stock data. Please check the stock code and try again."
-      : "分析股票数据失败。请检查股票代码并重试。";
-    throw new Error(errorMsg);
+      ? "Failed to analyze. Please check API Key in deployment settings."
+      : "分析失败。请检查部署设置中的 API Key 配置。";
+    throw new Error(error instanceof Error ? error.message : errorMsg);
   }
 };
 
