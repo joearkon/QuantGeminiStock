@@ -98,21 +98,28 @@ export const startStockChat = async (stockCode: string, market: Market, lang: La
       : `当前模式: 收盘快照 (SNAPSHOT)。优先级: 分析**上一个完整交易日 (${targetDataDate})** 的收盘数据。专注于基于确定的收盘价进行的精准技术面复盘。`;
   }
 
-  // Initial Prompt Construction - Optimized for freshness
+  // --- CRITICAL FIX: TECHNICAL ANALYSIS FALLBACK ---
+  systemInstruction += lang === 'en' 
+    ? ` \nTECHNICAL ANALYSIS FALLBACK: If current intraday data is incomplete (e.g. missing High/Low/Volume) or specific indicators are not found, you MUST perform the technical analysis (MA, MACD, KDJ) based on the **Last Complete Trading Day's** data. 
+    **DO NOT** state "insufficient data to calculate". Instead, analyze the trend based on the most recent Closing Price and historical context found.`
+    : ` \n**技术面分析强制兜底规则**: 如果无法获取今日实时的完整K线数据（如缺失开盘价/最高价/成交量/技术指标），你**必须**基于**上一个完整交易日** (${targetDataDate}) 的收盘数据进行 MA、MACD、KDJ 分析。
+    **绝对不要**回答“因数据不足无法分析指标”。你必须根据搜索到的历史K线或前一日收盘情况，推断当前的技术面形态（如：价格依然站在20日均线之上，MACD开口情况等）。`;
+
+  // Initial Prompt Construction - Optimized for freshness AND historical context
   const modePromptEn = mode === 'LIVE' 
     ? `FETCH LIVE DATA:
        1. Search for "${stockCode} latest price" and "${stockCode} stock quote ${now.getFullYear()}".
-       2. If today is weekend, search for "${stockCode} closing price last Friday".
-       3. VERIFY the date. If the data is not from Today or ${targetDataDate}, keep searching.`
-    : `FETCH CLOSING DATA: Search for "${stockCode} closing price ${targetDataDate}" and "${stockCode} historical data".`;
+       2. If today is weekend/closed, search for "${stockCode} closing price ${targetDataDate}".
+       3. ALSO Search for "${stockCode} technical analysis ${targetDataDate}" to get MA/MACD context if live data is just a price.`
+    : `FETCH CLOSING DATA: Search for "${stockCode} closing price ${targetDataDate}" and "${stockCode} technical indicators MA MACD".`;
 
   const modePromptZh = mode === 'LIVE'
-    ? `【获取最新数据指令】:
+    ? `【获取数据指令】:
        1. 搜索 "${stockCode} 最新股价", "${stockCode} 东方财富", "${stockCode} 新浪财经 实时".
        2. **必须验证日期**: 请确认数据是 **今日** 或 **${targetDataDate}** 的。
-       3. 如果搜索结果显示的是几天前的数据（例如上周四），请忽略它，继续寻找 **${targetDataDate}** (上周五) 的数据。
-       4. 如果无法获取实时数据，请明确说明使用“最近收盘价”。`
-    : `获取收盘数据: 搜索 "${stockCode} 收盘价 ${targetDataDate}" 或 "${stockCode} 历史行情"。`;
+       3. **技术面补充**: 如果今日只有价格没有指标，请同时搜索 "${stockCode} ${targetDataDate} 技术分析" 或 "${stockCode} 均线 MACD" 以获取前一日指标作为参考。
+       4. 如果无法获取实时数据，明确说明使用“最近收盘价”。`
+    : `获取收盘数据: 搜索 "${stockCode} 收盘价 ${targetDataDate}" 以及 "${stockCode} 均线 MACD 分析"。`;
 
   const initialPrompt = lang === 'en' ? `
     Target Stock: ${stockCode}
@@ -128,10 +135,10 @@ export const startStockChat = async (stockCode: string, market: Market, lang: La
     # 📊 QUANT REPORT: ${stockCode} (${mode === 'LIVE' ? 'Intraday/Latest' : 'Closing Snapshot'})
 
     ## 1. Market Data Snapshot
-    (List Price, Change %, PE, Volume. **CRITICAL: Explicitly state "Data Date: [YYYY-MM-DD]"** to prove freshness.)
+    (List Price, Change %, PE, Volume. **CRITICAL: Explicitly state "Data Date: [YYYY-MM-DD]"**.)
 
     ## 2. Technical Analysis
-    (Analyze MA, MACD, KDJ, Bollinger Bands. If LIVE, mention these are dynamic.)
+    (Analyze MA, MACD, KDJ, Bollinger Bands. **RULE: If today's detailed data is missing, analyze the Previous Day's technicals instead. Do not say "unknown".**)
 
     ## 3. Fundamental News
     (Summarize the top 3 recent news items.)
@@ -170,7 +177,7 @@ export const startStockChat = async (stockCode: string, market: Market, lang: La
     (列出价格, 涨跌幅, PE, 成交量。**重要: 必须在第一行明确标注: "数据日期: [YYYY年MM月DD日]"** 以证明数据的时效性。如果不匹配今日或${targetDataDate}，请发出警告。)
 
     ## 2. 技术面分析
-    (分析均线 MA, MACD, KDJ, 布林带。**重要: 如果是LIVE模式，请注明指标随股价变动；如果是SNAPSHOT模式，基于确定的收盘价分析。**)
+    (分析均线 MA, MACD, KDJ, 布林带。**重要兜底规则: 如果今日数据不全，请务必基于上一交易日(${targetDataDate})的收盘数据进行完整分析，并注明“基于昨日收盘数据”。不要回答无法分析。**)
 
     ## 3. 基本面消息
     (总结影响该股票的前3条近期新闻或公告。)
