@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { startStockChat, startBatchAnalysis, sendFollowUpMessage } from './services/geminiService';
+import { startStockChat, startBatchAnalysis, sendFollowUpMessage, discoverStocksByTheme } from './services/geminiService';
 import { AnalysisResult, Language, Market, ChatMessage, AnalysisMode, BatchItem } from './types';
 import { TerminalLoader } from './components/TerminalLoader';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
@@ -47,6 +47,11 @@ const TRANSLATIONS = {
       'US_STOCK': 'Enter Code(s) e.g., AAPL NVDA',
       'HK_STOCK': 'Enter Code(s) e.g., 00700 03690'
     },
+    discoveryPlaceholders: {
+      'A_SHARE': 'Enter theme (e.g., High Dividend Banks)...',
+      'US_STOCK': 'Enter theme (e.g., AI Chip Makers)...',
+      'HK_STOCK': 'Enter theme (e.g., Tech Giants)...'
+    },
     quickActions: {
       entry: "🔵 Triggered Entry",
       stop: "🔴 Hit Stop Loss",
@@ -56,7 +61,12 @@ const TRANSLATIONS = {
     modes: {
       LIVE: '🚀 Live / Intraday',
       SNAPSHOT: '📸 Close / Snapshot'
-    }
+    },
+    searchTabs: {
+        code: "⌨️ Code Input",
+        discovery: "🔍 Smart Discovery"
+    },
+    discovering: "Scanning market for related assets..."
   },
   zh: {
     subtitle: "全球量化分析系统 v2.5",
@@ -98,6 +108,11 @@ const TRANSLATIONS = {
       'US_STOCK': '输入代码 (支持多只，如 AAPL MSFT)',
       'HK_STOCK': '输入代码 (支持多只，如 00700 09988)'
     },
+    discoveryPlaceholders: {
+      'A_SHARE': '输入行业/概念 (如: 低空经济龙头)...',
+      'US_STOCK': '输入行业/概念 (如: AI 芯片龙头)...',
+      'HK_STOCK': '输入行业/概念 (如: 互联网科技股)...'
+    },
     quickActions: {
       entry: "🔵 已触发建仓",
       stop: "🔴 触发止损",
@@ -107,24 +122,32 @@ const TRANSLATIONS = {
     modes: {
       LIVE: '🚀 实时 / 盘中',
       SNAPSHOT: '📸 复盘 / 快照'
-    }
+    },
+    searchTabs: {
+        code: "⌨️ 输入代码",
+        discovery: "🔍 智能选股"
+    },
+    discovering: "正在挖掘相关标的..."
   }
 };
 
 // Define specific View States for clearer navigation logic
 type ViewState = 'HOME' | 'BATCH_LIST' | 'SINGLE_REPORT';
+type SearchMode = 'CODE' | 'DISCOVERY';
 
 const App: React.FC = () => {
   const [stockCode, setStockCode] = useState('');
   const [market, setMarket] = useState<Market>('A_SHARE');
   const [analysisMode, setAnalysisMode] = useState<AnalysisMode>('LIVE');
   const [language, setLanguage] = useState<Language>('zh');
+  const [searchMode, setSearchMode] = useState<SearchMode>('CODE');
   
   // Navigation State
   const [viewState, setViewState] = useState<ViewState>('HOME');
   
   // Data States
   const [isLoading, setIsLoading] = useState(false); 
+  const [loadingText, setLoadingText] = useState<string>(''); // Custom loading text
   const [streamingAnalysisText, setStreamingAnalysisText] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
@@ -153,6 +176,7 @@ const App: React.FC = () => {
     const isBatchRequest = codes.length > 1;
     
     setIsLoading(true);
+    setLoadingText(''); // Reset custom text
     setError(null);
     setStreamingAnalysisText(''); 
     setChatHistory([]); // Clear chat for new single analysis
@@ -203,14 +227,29 @@ const App: React.FC = () => {
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!stockCode.trim()) return;
-    
-    // Split by comma (English and Chinese) or space
-    // FIX: Added \uff0c for Chinese comma support
-    const codes = stockCode.split(/[\s,\uff0c]+/).filter(c => c.trim().length > 0);
-    
-    if (codes.length === 0) return;
 
-    await runAnalysis(codes, false);
+    if (searchMode === 'DISCOVERY') {
+        // --- DISCOVERY FLOW ---
+        setIsLoading(true);
+        setLoadingText(t.discovering);
+        try {
+            const discoveredCodes = await discoverStocksByTheme(stockCode, market, language);
+            if (discoveredCodes.length === 0) {
+                throw new Error("No stocks found for this theme.");
+            }
+            // Auto-trigger batch analysis with discovered codes
+            await runAnalysis(discoveredCodes, false);
+        } catch (err: any) {
+            setError(err.message || "Discovery failed.");
+            setIsLoading(false);
+        }
+    } else {
+        // --- STANDARD CODE FLOW ---
+        // Split by comma (English and Chinese) or space
+        const codes = stockCode.split(/[\s,\uff0c]+/).filter(c => c.trim().length > 0);
+        if (codes.length === 0) return;
+        await runAnalysis(codes, false);
+    }
   };
 
   // Called when clicking "Deep Dive" in Batch Table
@@ -285,6 +324,7 @@ const App: React.FC = () => {
     setError(null);
     setChatHistory([]);
     setViewState('HOME');
+    setSearchMode('CODE'); // Reset to default
     chatSessionRef.current = null;
   };
 
@@ -391,33 +431,56 @@ const App: React.FC = () => {
                   ))}
                 </div>
 
-                {/* Mode Toggle */}
-                <div className="flex justify-center">
+                {/* Search Mode Tabs */}
+                <div className="flex justify-between items-end px-2">
+                    <div className="flex gap-4">
+                        <button 
+                            onClick={() => setSearchMode('CODE')}
+                            className={`text-sm font-bold pb-2 border-b-2 transition-colors ${searchMode === 'CODE' ? 'text-white border-blue-500' : 'text-slate-500 border-transparent hover:text-slate-300'}`}
+                        >
+                            {t.searchTabs.code}
+                        </button>
+                        <button 
+                            onClick={() => setSearchMode('DISCOVERY')}
+                            className={`text-sm font-bold pb-2 border-b-2 transition-colors ${searchMode === 'DISCOVERY' ? 'text-white border-purple-500' : 'text-slate-500 border-transparent hover:text-slate-300'}`}
+                        >
+                            {t.searchTabs.discovery}
+                        </button>
+                    </div>
+                </div>
+
+                {/* Search Bar Container */}
+                <div className={`bg-slate-900/50 p-2 rounded-2xl border shadow-xl backdrop-blur-sm transition-all hover:shadow-2xl ${searchMode === 'DISCOVERY' ? 'border-purple-500/30 hover:border-purple-500/50' : 'border-slate-800 hover:border-slate-700'}`}>
+                  <form onSubmit={handleSearch} className="relative flex items-center">
+                    <input
+                      type="text"
+                      value={stockCode}
+                      onChange={(e) => setStockCode(e.target.value)}
+                      placeholder={searchMode === 'DISCOVERY' ? t.discoveryPlaceholders[market] : t.placeholders[market]}
+                      className="w-full bg-transparent text-white text-lg px-6 py-4 outline-none placeholder:text-slate-600 font-mono"
+                    />
+                    <button
+                      type="submit"
+                      disabled={!stockCode.trim()}
+                      className={`absolute right-2 text-white px-6 py-2.5 rounded-xl font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg ${
+                          searchMode === 'DISCOVERY' 
+                          ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-900/20'
+                          : 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/20'
+                      }`}
+                    >
+                      {t.analyzeBtn}
+                    </button>
+                  </form>
+                </div>
+                
+                {/* Mode Toggle (Live/Snapshot) - Keep below or integrate nicely */}
+                <div className="flex justify-center pt-2">
                    <div className="inline-flex bg-slate-900 p-1 rounded-lg border border-slate-800">
                      <button onClick={() => setAnalysisMode('LIVE')} className={`px-4 py-1.5 text-xs font-mono rounded-md transition-all flex items-center gap-2 ${analysisMode === 'LIVE' ? 'bg-blue-900/40 text-blue-300 border border-blue-800/50' : 'text-slate-500 hover:text-slate-400'}`}>{t.modes.LIVE}</button>
                      <button onClick={() => setAnalysisMode('SNAPSHOT')} className={`px-4 py-1.5 text-xs font-mono rounded-md transition-all flex items-center gap-2 ${analysisMode === 'SNAPSHOT' ? 'bg-purple-900/40 text-purple-300 border border-purple-800/50' : 'text-slate-500 hover:text-slate-400'}`}>{t.modes.SNAPSHOT}</button>
                    </div>
                 </div>
 
-                {/* Search Bar */}
-                <div className="bg-slate-900/50 p-2 rounded-2xl border border-slate-800 shadow-xl backdrop-blur-sm transition-all hover:border-slate-700 hover:shadow-2xl">
-                  <form onSubmit={handleSearch} className="relative flex items-center">
-                    <input
-                      type="text"
-                      value={stockCode}
-                      onChange={(e) => setStockCode(e.target.value)}
-                      placeholder={t.placeholders[market]}
-                      className="w-full bg-transparent text-white text-lg px-6 py-4 outline-none placeholder:text-slate-600 font-mono"
-                    />
-                    <button
-                      type="submit"
-                      disabled={!stockCode.trim()}
-                      className="absolute right-2 bg-blue-600 hover:bg-blue-500 text-white px-6 py-2.5 rounded-xl font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg shadow-blue-900/20"
-                    >
-                      {t.analyzeBtn}
-                    </button>
-                  </form>
-                </div>
             </div>
           </div>
         )}
@@ -425,7 +488,18 @@ const App: React.FC = () => {
         {/* --- 2. LOADING STATE --- */}
         {isLoading && (
           <div className="mt-8">
-            <TerminalLoader lang={language} key={language} />
+            {/* Show custom text if available (e.g. Discovery mode), otherwise standard loader */}
+            {loadingText ? (
+                <div className="max-w-2xl mx-auto bg-slate-950 border border-purple-500/30 rounded-lg p-8 text-center animate-pulse">
+                     <div className="w-12 h-12 bg-purple-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <svg className="w-6 h-6 text-purple-400 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" /></svg>
+                     </div>
+                     <h3 className="text-xl font-bold text-white mb-2">{loadingText}</h3>
+                     <p className="text-slate-500 text-sm font-mono">QuantGemini AI is searching the knowledge base...</p>
+                </div>
+            ) : (
+                <TerminalLoader lang={language} key={language} />
+            )}
           </div>
         )}
 

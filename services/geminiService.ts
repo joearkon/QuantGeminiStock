@@ -53,6 +53,64 @@ const getGenAIClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
+// --- SMART DISCOVERY SERVICE ---
+export const discoverStocksByTheme = async (
+  theme: string,
+  market: Market,
+  lang: Language
+): Promise<string[]> => {
+  const modelId = "gemini-2.5-flash";
+  const marketName = MARKET_CONFIG[lang][market];
+  
+  const systemInstruction = lang === 'en'
+    ? `You are a Senior Financial Research Assistant. 
+       User will provide a theme, sector, or concept. 
+       Use Google Search to find the top 3-5 most representative or trending stock codes for this theme in the ${marketName}.
+       CRITICAL: Return ONLY a JSON array of stock code strings. No other text.`
+    : `你是一位资深金融研究助手。
+       用户将提供一个主题、板块或概念（如“低空经济”、“高股息”）。
+       请利用 Google Search 搜索该主题在 ${marketName} 中最热门、最核心的 3-5 只龙头股票代码。
+       **关键**: 仅返回一个包含股票代码字符串的 JSON 数组。不要输出任何其他解释文本。`;
+
+  const prompt = lang === 'en'
+    ? `Find top stocks for theme: "${theme}". Return strictly a JSON array of codes, e.g., ["AAPL", "MSFT"]. For A-Shares, use 6-digit codes.`
+    : `挖掘主题: "${theme}" 的核心龙头股。仅返回代码 JSON 数组，例如 ["600519", "000858"]。`;
+
+  try {
+    const ai = getGenAIClient();
+    const chat = ai.chats.create({
+      model: modelId,
+      config: {
+        tools: [{ googleSearch: {} }],
+        temperature: 0.1,
+        systemInstruction: systemInstruction,
+      },
+    });
+
+    const response = await chat.sendMessage({ message: prompt });
+    const text = response.text || "";
+
+    // Parse JSON Array
+    let codes: string[] = [];
+    const jsonMatch = text.match(/\[[\s\S]*?\]/);
+    if (jsonMatch) {
+      try {
+        codes = JSON.parse(jsonMatch[0]);
+      } catch (e) {
+        console.warn("Discovery JSON parse failed", e);
+      }
+    }
+
+    // Clean codes (remove .SH, .SZ suffixes if present, though we want raw codes mostly)
+    // A-Share codes are usually 6 digits.
+    return codes.map(c => c.replace(/[^a-zA-Z0-9]/g, '')).slice(0, 6); // Limit to top 6
+
+  } catch (error) {
+    console.error("Smart Discovery Error", error);
+    throw new Error("Failed to discover stocks.");
+  }
+};
+
 // --- BATCH ANALYSIS SERVICE ---
 export const startBatchAnalysis = async (
   stockCodes: string[],
