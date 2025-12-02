@@ -11,6 +11,14 @@ export type Market = 'A_SHARE' | 'US_STOCK' | 'HK_STOCK';
 
 export type AnalysisMode = 'LIVE' | 'SNAPSHOT';
 
+export interface StructuredAnalysisData {
+  signal: string;
+  confidence: number;
+  entryPrice: number;
+  stopLoss: number;
+  targetPrice: number;
+}
+
 export interface AnalysisResult {
   rawText: string;
   symbol: string;
@@ -19,6 +27,7 @@ export interface AnalysisResult {
     uri: string;
     title: string;
   }>;
+  structuredData?: StructuredAnalysisData;
 }
 
 export interface StockQuery {
