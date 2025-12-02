@@ -23,26 +23,32 @@ export interface ChatSessionResult {
 const getGenAIClient = () => {
   let apiKey = '';
 
-  // 1. Try standard process.env check (Safe if process exists)
-  if (typeof process !== 'undefined' && process.env) {
-    apiKey = process.env.API_KEY || '';
-  }
-
-  // 2. Try direct access wrapped in try-catch to support Bundler String Replacement (e.g. Vite/Webpack define)
-  // If the bundler replaces "process.env.API_KEY" with "secret_key", this works.
-  // If not, and process is undefined, it throws ReferenceError, which we catch.
-  if (!apiKey) {
+  // Helper to try getting a value safely without throwing ReferenceError
+  const tryGet = (fn: () => string | undefined) => {
     try {
-      // @ts-ignore - Ignore TS warning about process potentially being undefined
-      apiKey = process.env.API_KEY;
-    } catch (e) {
-      // Ignore ReferenceError: process is not defined
+      return fn();
+    } catch {
+      return undefined;
     }
-  }
+  };
+
+  // Attempt to find the API Key in various common locations.
+  // This supports Node.js, Webpack, Vite, Next.js, and other bundlers.
+  apiKey = 
+    tryGet(() => process.env.API_KEY) ||
+    tryGet(() => process.env.VITE_API_KEY) ||
+    tryGet(() => process.env.NEXT_PUBLIC_API_KEY) ||
+    // @ts-ignore
+    tryGet(() => import.meta.env?.API_KEY) ||
+    // @ts-ignore
+    tryGet(() => import.meta.env?.VITE_API_KEY) ||
+    // @ts-ignore
+    tryGet(() => import.meta.env?.NEXT_PUBLIC_API_KEY) ||
+    '';
 
   if (!apiKey) {
-    console.error("Gemini API Key missing. Ensure API_KEY is set in your environment variables.");
-    throw new Error("API Key is missing. Please check deployment settings (e.g., Vercel Environment Variables).");
+    console.error("Gemini API Key missing. Please check your environment variables.");
+    throw new Error("API Key is missing. Ensure 'API_KEY' (or 'VITE_API_KEY' for Vite) is set in your environment.");
   }
 
   return new GoogleGenAI({ apiKey });
