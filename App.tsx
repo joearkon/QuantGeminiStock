@@ -66,7 +66,8 @@ const TRANSLATIONS = {
         code: "⌨️ Code Input",
         discovery: "🔍 Smart Discovery"
     },
-    discovering: "Scanning market for related assets..."
+    discovering: "Scanning market for related assets...",
+    uploadImage: "Analyze Chart/Image"
   },
   zh: {
     subtitle: "全球量化分析系统 v2.5",
@@ -127,7 +128,8 @@ const TRANSLATIONS = {
         code: "⌨️ 输入代码",
         discovery: "🔍 智能选股"
     },
-    discovering: "正在挖掘相关标的..."
+    discovering: "正在挖掘相关标的...",
+    uploadImage: "分析图表/截图"
   }
 };
 
@@ -151,6 +153,10 @@ const App: React.FC = () => {
   const [streamingAnalysisText, setStreamingAnalysisText] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
+  // Image State
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   // Separate results for Batch and Single to support navigation
   const [singleResult, setSingleResult] = useState<AnalysisResult | null>(null);
   const [batchCache, setBatchCache] = useState<AnalysisResult | null>(null); // Store batch data here
@@ -171,9 +177,27 @@ const App: React.FC = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory, streamingAnalysisText]);
 
+  // Handle Image Upload
+  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setSelectedImage(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const clearImage = () => {
+      setSelectedImage(null);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   // Main Entry Point for Analysis
-  const runAnalysis = async (codes: string[], fromBatchClick: boolean = false) => {
-    const isBatchRequest = codes.length > 1;
+  const runAnalysis = async (codes: string[], fromBatchClick: boolean = false, imageBase64?: string) => {
+    // Force Single Mode if Image is present
+    const isBatchRequest = codes.length > 1 && !imageBase64;
     
     setIsLoading(true);
     setLoadingText(''); // Reset custom text
@@ -201,7 +225,7 @@ const App: React.FC = () => {
         
         // 1. Start Stream
         const { analysis, chat } = await startStockChat(
-          codes[0], 
+          codes[0] || (language === 'zh' ? '图片分析' : 'Image Analysis'), 
           market, 
           language, 
           analysisMode,
@@ -210,7 +234,8 @@ const App: React.FC = () => {
             setIsLoading(false); // Stop loader animation
             setViewState('SINGLE_REPORT'); // Switch view immediately to show stream
             setStreamingAnalysisText(textChunk);
-          }
+          },
+          imageBase64 // Pass image if available
         );
         
         // 2. Finalize
@@ -226,7 +251,14 @@ const App: React.FC = () => {
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!stockCode.trim()) return;
+    if (!stockCode.trim() && !selectedImage) return;
+
+    // Prioritize Image Analysis (Single Mode)
+    if (selectedImage) {
+        // If image is selected, we treat it as a single chat session, potentially with the text input as context
+        await runAnalysis([stockCode], false, selectedImage);
+        return;
+    }
 
     if (searchMode === 'DISCOVERY') {
         // --- DISCOVERY FLOW ---
@@ -321,6 +353,7 @@ const App: React.FC = () => {
     setBatchCache(null);
     setStreamingAnalysisText('');
     setStockCode('');
+    setSelectedImage(null); // Clear image
     setError(null);
     setChatHistory([]);
     setViewState('HOME');
@@ -450,7 +483,19 @@ const App: React.FC = () => {
                 </div>
 
                 {/* Search Bar Container */}
-                <div className={`bg-slate-900/50 p-2 rounded-2xl border shadow-xl backdrop-blur-sm transition-all hover:shadow-2xl ${searchMode === 'DISCOVERY' ? 'border-purple-500/30 hover:border-purple-500/50' : 'border-slate-800 hover:border-slate-700'}`}>
+                <div className={`bg-slate-900/50 p-2 rounded-2xl border shadow-xl backdrop-blur-sm transition-all hover:shadow-2xl flex flex-col gap-2 ${searchMode === 'DISCOVERY' ? 'border-purple-500/30 hover:border-purple-500/50' : 'border-slate-800 hover:border-slate-700'}`}>
+                  
+                  {/* Image Preview */}
+                  {selectedImage && (
+                      <div className="flex items-center gap-2 p-2 bg-slate-800 rounded-lg w-fit">
+                          <img src={selectedImage} alt="Preview" className="h-12 w-12 object-cover rounded border border-slate-700" />
+                          <div className="text-xs text-slate-300">Image attached</div>
+                          <button onClick={clearImage} className="ml-2 text-slate-500 hover:text-rose-400">
+                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                          </button>
+                      </div>
+                  )}
+
                   <form onSubmit={handleSearch} className="relative flex items-center">
                     <input
                       type="text"
@@ -459,17 +504,40 @@ const App: React.FC = () => {
                       placeholder={searchMode === 'DISCOVERY' ? t.discoveryPlaceholders[market] : t.placeholders[market]}
                       className="w-full bg-transparent text-white text-lg px-6 py-4 outline-none placeholder:text-slate-600 font-mono"
                     />
-                    <button
-                      type="submit"
-                      disabled={!stockCode.trim()}
-                      className={`absolute right-2 text-white px-6 py-2.5 rounded-xl font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg ${
-                          searchMode === 'DISCOVERY' 
-                          ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-900/20'
-                          : 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/20'
-                      }`}
-                    >
-                      {t.analyzeBtn}
-                    </button>
+                    
+                    {/* Action Buttons Right */}
+                    <div className="absolute right-2 flex items-center gap-2">
+                        {/* Image Upload Button */}
+                        <input 
+                            type="file" 
+                            accept="image/*" 
+                            ref={fileInputRef} 
+                            onChange={handleImageSelect} 
+                            hidden 
+                        />
+                        <button
+                            type="button"
+                            onClick={() => fileInputRef.current?.click()}
+                            title={t.uploadImage}
+                            className="p-2 text-slate-400 hover:text-blue-400 transition-colors rounded-lg hover:bg-slate-800"
+                        >
+                             <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                             </svg>
+                        </button>
+
+                        <button
+                        type="submit"
+                        disabled={(!stockCode.trim() && !selectedImage)}
+                        className={`text-white px-6 py-2.5 rounded-xl font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg ${
+                            searchMode === 'DISCOVERY' 
+                            ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-900/20'
+                            : 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/20'
+                        }`}
+                        >
+                        {t.analyzeBtn}
+                        </button>
+                    </div>
                   </form>
                 </div>
                 

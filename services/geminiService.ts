@@ -234,7 +234,8 @@ export const startStockChat = async (
   market: Market, 
   lang: Language, 
   mode: AnalysisMode,
-  onStream?: (text: string) => void
+  onStream?: (text: string) => void,
+  imageBase64?: string
 ): Promise<ChatSessionResult> => {
   const modelId = "gemini-2.5-flash";
   const marketName = MARKET_CONFIG[lang][market];
@@ -253,10 +254,10 @@ export const startStockChat = async (
     minute: '2-digit'
   });
 
-  // Calculate "Target Data Date" (e.g., if Sunday, target Friday)
+  // Calculate "Target Data Date"
   let targetDataDate = "Today";
   if (isWeekend) {
-      const daysToSubtract = dayOfWeek === 0 ? 2 : 1; // Sun -> -2 days (Fri), Sat -> -1 day (Fri)
+      const daysToSubtract = dayOfWeek === 0 ? 2 : 1; 
       const lastFriday = new Date(now);
       lastFriday.setDate(now.getDate() - daysToSubtract);
       const friStr = lastFriday.toLocaleDateString(lang === 'en' ? 'en-US' : 'zh-CN', { month: 'numeric', day: 'numeric' });
@@ -267,6 +268,17 @@ export const startStockChat = async (
   let systemInstruction = lang === 'en' 
     ? `Act as a senior ${marketName} Quantitative Analyst. Current Time: ${dateStr}. `
     : `扮演一位资深${marketName}量化分析师。当前时间: ${dateStr}。`;
+
+  // Image Analysis Instruction
+  if (imageBase64) {
+      systemInstruction += lang === 'en' 
+        ? ` \nVISUAL INPUT DETECTED: The user has uploaded an image (likely a chart, financial report, or news snippet).
+           Combine the visual insights from the image with real-time market data search results.
+           If the image is a K-line chart, analyze the technical patterns visible.`
+        : ` \n**视觉输入检测**: 用户上传了一张图片（可能是K线图、财报或新闻截图）。
+           请将图片中的视觉信息（如技术形态、关键点位）与实时联网搜索的市场数据结合进行综合分析。
+           如果图片是K线图，请重点解读图中可见的趋势和形态。`;
+  }
 
   // Mode Specific Instructions
   if (mode === 'LIVE') {
@@ -285,7 +297,6 @@ export const startStockChat = async (
       : `当前模式: 收盘快照 (SNAPSHOT)。优先级: 分析**上一个完整交易日 (${targetDataDate})** 的收盘数据。专注于基于确定的收盘价进行的精准技术面复盘。`;
   }
 
-  // --- CRITICAL FIX: TECHNICAL ANALYSIS FALLBACK ---
   systemInstruction += lang === 'en' 
     ? ` \nTECHNICAL ANALYSIS FALLBACK: If current intraday data is incomplete (e.g. missing High/Low/Volume) or specific indicators are not found, you MUST perform the technical analysis (MA, MACD, KDJ) based on the **Last Complete Trading Day's** data. 
     **DO NOT** state "insufficient data to calculate". Instead, analyze the trend based on the most recent Closing Price and historical context found.`
@@ -336,9 +347,10 @@ export const startStockChat = async (
     : `获取收盘数据: 搜索 "${stockCode} 收盘价 ${targetDataDate}" 以及 "${stockCode} 均线 MACD 分析"。`;
 
   const initialPrompt = lang === 'en' ? `
-    Target Stock: ${stockCode}
+    Target Stock/Context: ${stockCode}
     Current System Time: ${dateStr}
     Analysis Mode: ${mode}
+    ${imageBase64 ? '[IMAGE ATTACHED]: Please analyze the chart or info in the image and cross-reference with live data.' : ''}
     
     ACTION REQUIRED: ${modePromptEn}
     
@@ -353,6 +365,7 @@ export const startStockChat = async (
 
     ## 2. Technical Analysis
     (Analyze MA, MACD, KDJ, Bollinger Bands. **RULE: If today's detailed data is missing, analyze the Previous Day's technicals instead. Do not say "unknown".**)
+    ${imageBase64 ? '(Incorporate observations from the attached image here)' : ''}
 
     ## 3. Fundamental News
     (Summarize the top 3 recent news items.)
@@ -377,9 +390,10 @@ export const startStockChat = async (
 
     ${jsonInstruction}
     ` : `
-    目标股票代码: ${stockCode}
+    目标股票代码/上下文: ${stockCode}
     当前系统时间: ${dateStr}
     分析模式: ${mode === 'LIVE' ? '实时盘中/最新' : '收盘复盘'}
+    ${imageBase64 ? '[已上传图片]: 请分析图片中的图表或信息，并与实时数据交叉验证。' : ''}
     
     关键指令: ${modePromptZh}
     
@@ -394,6 +408,7 @@ export const startStockChat = async (
 
     ## 2. 技术面分析
     (分析均线 MA, MACD, KDJ, 布林带。**重要兜底规则: 如果今日数据不全，请务必基于上一交易日(${targetDataDate})的收盘数据进行完整分析，并注明“基于昨日收盘数据”。不要回答无法分析。**)
+    ${imageBase64 ? '(请结合图片中的K线或信息进行解读)' : ''}
 
     ## 3. 基本面消息
     (总结影响该股票的前3条近期新闻或公告。)
@@ -431,7 +446,26 @@ export const startStockChat = async (
       },
     });
 
-    const streamResponse = await chat.sendMessageStream({ message: initialPrompt });
+    // Handle Multimodal (Image + Text) or Text only
+    let messageContent: any = initialPrompt;
+    
+    if (imageBase64) {
+        // Strip data prefix if present (e.g. data:image/png;base64,)
+        const base64Data = imageBase64.split(',')[1] || imageBase64;
+        const mimeType = imageBase64.match(/data:([^;]+);/)?.[1] || 'image/jpeg';
+        
+        messageContent = [
+            { text: initialPrompt },
+            { 
+                inlineData: { 
+                    mimeType: mimeType, 
+                    data: base64Data 
+                } 
+            }
+        ];
+    }
+
+    const streamResponse = await chat.sendMessageStream({ message: messageContent });
     
     let fullText = "";
     let groundingChunks: any[] = [];
@@ -460,11 +494,7 @@ export const startStockChat = async (
     // Parse JSON Block (Final processing)
     let structuredData: StructuredAnalysisData | undefined;
     
-    // Improved Regex:
-    // 1. Target code blocks that specifically contain our keywords ("signal", "entryPrice") to avoid removing other code blocks.
-    // 2. Use 'g' flag isn't needed if we match the one at the end, but allow matching anywhere if model ignores "at the end".
     const jsonBlockRegex = /```(?:json)?\s*(\{[\s\S]*?"signal"[\s\S]*?"entryPrice"[\s\S]*?\})\s*```/i;
-    // Also support raw JSON at the very end if code blocks are missing
     const rawJsonRegex = /(\{[\s\S]*?"signal"[\s\S]*?"entryPrice"[\s\S]*?\})\s*$/i;
 
     let match = text.match(jsonBlockRegex);
@@ -472,9 +502,8 @@ export const startStockChat = async (
 
     if (match) {
         jsonStr = match[1];
-        text = text.replace(match[0], '').trim(); // Remove the identified block
+        text = text.replace(match[0], '').trim(); 
     } else {
-        // Fallback: Check for raw JSON at the end
         match = text.match(rawJsonRegex);
         if (match) {
              jsonStr = match[1];
@@ -494,13 +523,12 @@ export const startStockChat = async (
       .map((chunk) => chunk.web)
       .filter((web) => web !== undefined) as Array<{ uri: string; title: string }>;
 
-    // Remove duplicates from grounding sources based on URI
     const uniqueSources = Array.from(new Map(groundingSources.map(s => [s.uri, s])).values()) as Array<{ uri: string; title: string }>;
 
     return {
       analysis: {
         rawText: text,
-        symbol: stockCode,
+        symbol: stockCode || (lang === 'en' ? 'IMAGE ANALYSIS' : '图片分析'),
         timestamp: new Date().toLocaleTimeString(),
         groundingSources: uniqueSources,
         structuredData,
