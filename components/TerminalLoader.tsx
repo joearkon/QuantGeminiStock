@@ -26,6 +26,7 @@ interface TerminalLoaderProps {
 
 export const TerminalLoader: React.FC<TerminalLoaderProps> = ({ lang }) => {
   const currentStepsText = STEPS[lang];
+  const [elapsed, setElapsed] = useState(0.0);
   
   const [steps, setSteps] = useState<LoadingStep[]>(
     currentStepsText.map((msg, idx) => ({ id: idx, message: msg, active: idx === 0, completed: false }))
@@ -33,8 +34,15 @@ export const TerminalLoader: React.FC<TerminalLoaderProps> = ({ lang }) => {
 
   useEffect(() => {
     let currentStepIndex = 0;
+    const startTime = Date.now();
 
-    const interval = setInterval(() => {
+    // Timer Interval
+    const timerInterval = setInterval(() => {
+        setElapsed((Date.now() - startTime) / 1000);
+    }, 100);
+
+    // Steps Interval
+    const stepsInterval = setInterval(() => {
       setSteps(prev => {
         const newSteps = [...prev];
         
@@ -55,20 +63,28 @@ export const TerminalLoader: React.FC<TerminalLoaderProps> = ({ lang }) => {
       });
 
       if (currentStepIndex >= currentStepsText.length) {
-        clearInterval(interval);
+        clearInterval(stepsInterval);
       }
     }, 800);
 
-    return () => clearInterval(interval);
+    return () => {
+        clearInterval(stepsInterval);
+        clearInterval(timerInterval);
+    };
   }, [currentStepsText.length]);
 
   return (
     <div className="w-full max-w-2xl mx-auto bg-slate-950 border border-slate-800 rounded-lg p-6 font-mono text-sm shadow-2xl">
-      <div className="flex items-center gap-2 mb-4 border-b border-slate-800 pb-2">
-        <div className="w-3 h-3 rounded-full bg-red-500"></div>
-        <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
-        <div className="w-3 h-3 rounded-full bg-green-500"></div>
-        <span className="text-slate-500 ml-2">quant_engine — zsh</span>
+      <div className="flex items-center justify-between mb-4 border-b border-slate-800 pb-2">
+        <div className="flex items-center gap-2">
+            <div className="w-3 h-3 rounded-full bg-red-500"></div>
+            <div className="w-3 h-3 rounded-full bg-yellow-500"></div>
+            <div className="w-3 h-3 rounded-full bg-green-500"></div>
+            <span className="text-slate-500 ml-2">quant_engine — zsh</span>
+        </div>
+        <div className="text-slate-600 text-xs">
+            T+{elapsed.toFixed(1)}s
+        </div>
       </div>
       <div className="space-y-2">
         {steps.map((step) => (
@@ -84,6 +100,15 @@ export const TerminalLoader: React.FC<TerminalLoaderProps> = ({ lang }) => {
             </span>
           </div>
         ))}
+        {/* Connection Alive Indicator if steps finish but API is still thinking */}
+        {steps[steps.length - 1].completed && (
+            <div className="flex items-center gap-3 animate-pulse mt-4 pt-2 border-t border-slate-800/50">
+                <span className="w-4 text-center text-blue-500">⚡</span>
+                <span className="text-blue-300">
+                    {lang === 'en' ? 'Awaiting Data Stream from Gemini...' : '等待 Gemini 数据流回传...'}
+                </span>
+            </div>
+        )}
       </div>
     </div>
   );

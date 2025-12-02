@@ -8,13 +8,27 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) =
   // Simple regex-based parsing specifically tuned for the requested prompt format
   // Supports both English and Chinese markers
   
-  const sections = content.split('\n');
+  // Pre-process content to hide the config JSON if it's visible (e.g. during streaming)
+  // We identify it by looking for specific keys: "signal" AND "entryPrice" inside a JSON-like structure
+  const cleanContent = content
+    // Remove the specific config JSON block
+    .replace(/```(?:json)?\s*\{[\s\S]*?"signal"[\s\S]*?"entryPrice"[\s\S]*?\}\s*```/gi, '')
+    // Remove raw JSON at end if it looks like config
+    .replace(/\{[\s\S]*?"signal"[\s\S]*?"entryPrice"[\s\S]*?\}\s*$/gi, '');
+
+  const sections = cleanContent.split('\n');
 
   return (
     <div className="space-y-4 font-sans text-slate-300">
       {sections.map((line, index) => {
         const trimmed = line.trim();
         
+        // Skip empty lines at start or if resulted from cleaning
+        if (trimmed === '') return <div key={index} className="h-1"></div>;
+
+        // Skip printing code block fences if they are left over
+        if (trimmed.startsWith('```')) return null;
+
         if (trimmed.startsWith('# 📊')) {
            return <h1 key={index} className="text-2xl md:text-3xl font-bold text-white mb-6 border-b border-slate-700 pb-4">{trimmed.replace('#', '')}</h1>;
         }
@@ -77,8 +91,6 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content }) =
             return <p key={index} className="text-xs text-slate-500 mt-8 italic border-t border-slate-800 pt-4">{trimmed}</p>;
         }
         
-        if (trimmed === '') return <div key={index} className="h-2"></div>;
-
         return <p key={index} className="leading-relaxed">{trimmed}</p>;
       })}
     </div>

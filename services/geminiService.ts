@@ -1,5 +1,5 @@
-import { GoogleGenAI, Chat } from "@google/genai";
-import { AnalysisResult, Language, Market, AnalysisMode, StructuredAnalysisData } from "../types";
+import { GoogleGenAI, Chat, GenerateContentResponse, Type, Schema } from "@google/genai";
+import { AnalysisResult, Language, Market, AnalysisMode, StructuredAnalysisData, BatchItem } from "../types";
 
 const MARKET_CONFIG = {
   en: {
@@ -16,7 +16,7 @@ const MARKET_CONFIG = {
 
 export interface ChatSessionResult {
   analysis: AnalysisResult;
-  chat: Chat;
+  chat: Chat | null; // Batch mode might not have a persistent chat session
 }
 
 // Helper to safely initialize the client only when needed
@@ -33,7 +33,6 @@ const getGenAIClient = () => {
   };
 
   // Attempt to find the API Key in various common locations.
-  // This supports Node.js, Webpack, Vite, Next.js, and other bundlers.
   apiKey = 
     tryGet(() => process.env.API_KEY) ||
     tryGet(() => process.env.VITE_API_KEY) ||
@@ -54,7 +53,131 @@ const getGenAIClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
-export const startStockChat = async (stockCode: string, market: Market, lang: Language, mode: AnalysisMode): Promise<ChatSessionResult> => {
+// --- BATCH ANALYSIS SERVICE ---
+export const startBatchAnalysis = async (
+  stockCodes: string[],
+  market: Market,
+  lang: Language,
+  onStream?: (text: string) => void
+): Promise<ChatSessionResult> => {
+  const modelId = "gemini-2.5-flash";
+  const marketName = MARKET_CONFIG[lang][market];
+  const codeList = stockCodes.join(", ");
+  
+  // NOTE: responseSchema CANNOT be used with googleSearch tool in the current API version.
+  // We must rely on prompt engineering to get JSON.
+  
+  const systemInstruction = lang === 'en'
+    ? `You are a Quantitative Analyst. User will provide a list of stocks. 
+       Get real-time data for ALL of them using the search tool.
+       CRITICAL OUTPUT RULE: You must return the result as a STRICT JSON ARRAY ONLY.
+       Do NOT write any introduction, explanation, or markdown text outside the JSON block.
+       The JSON should be an array of objects.`
+    : `你是一位量化分析师。用户将提供一组股票代码。
+       请利用搜索工具获取所有股票的实时数据。
+       **关键输出规则**: 必须仅返回一个严格的 JSON 数组。
+       不要在 JSON 之外输出任何介绍、解释或 Markdown 文本。
+       JSON 必须是一个对象数组。`;
+
+  const prompt = lang === 'en' 
+    ? `Analyze these stocks in ${marketName}: [${codeList}].
+       Fetch latest price, change%, and technical summary for each.
+       Return a JSON Array where each object has these keys: 
+       "code" (string), "name" (string), "price" (string), "change" (string, include + or -), "signal" (BUY/SELL/HOLD/WAIT), "confidence" (number 0-100), "reason" (short summary string).`
+    : `分析 ${marketName} 的这些股票: [${codeList}]。
+       获取每只股票的最新价格、涨跌幅和技术面摘要。
+       返回一个 JSON 数组，每个对象包含以下键:
+       "code" (代码), "name" (名称), "price" (价格), "change" (涨跌幅, 带符号), "signal" (BUY/SELL/HOLD/WAIT), "confidence" (置信度数值 0-100), "reason" (简短理由)。`;
+
+  try {
+    const ai = getGenAIClient();
+    const chat = ai.chats.create({
+      model: modelId,
+      config: {
+        tools: [{ googleSearch: {} }],
+        temperature: 0.1,
+        systemInstruction: systemInstruction,
+        // responseMimeType and responseSchema REMOVED to avoid conflict with tools
+      },
+    });
+
+    const streamResponse = await chat.sendMessageStream({ message: prompt });
+    
+    let fullText = "";
+    for await (const chunk of streamResponse) {
+        if (chunk.text) {
+            fullText += chunk.text;
+            if (onStream) onStream(fullText);
+        }
+    }
+
+    let batchData: BatchItem[] = [];
+    
+    // Robust JSON Parsing Logic
+    try {
+        // 1. Try parsing raw text directly
+        batchData = JSON.parse(fullText);
+    } catch (e) {
+        // 2. Try extracting from Markdown Code Block ```json ... ```
+        const jsonBlockMatch = fullText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
+        if (jsonBlockMatch) {
+            try {
+                batchData = JSON.parse(jsonBlockMatch[1]);
+            } catch (e2) {
+                console.warn("Failed to parse JSON block in batch mode", e2);
+            }
+        } else {
+             // 3. Try finding the first '[' and last ']'
+             const firstBracket = fullText.indexOf('[');
+             const lastBracket = fullText.lastIndexOf(']');
+             if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+                 try {
+                     const potentialJson = fullText.substring(firstBracket, lastBracket + 1);
+                     batchData = JSON.parse(potentialJson);
+                 } catch (e3) {
+                     console.warn("Failed to parse extracted array", e3);
+                 }
+             }
+        }
+    }
+
+    if (!Array.isArray(batchData) || batchData.length === 0) {
+        console.error("Batch Analysis yielded no valid JSON array:", fullText);
+        // Fallback for single item if somehow object returned instead of array
+        if (batchData && typeof batchData === 'object' && !Array.isArray(batchData)) {
+            // @ts-ignore
+            batchData = [batchData];
+        } else {
+            throw new Error("Invalid JSON format received from AI.");
+        }
+    }
+
+    return {
+        analysis: {
+            isBatch: true,
+            batchData: batchData,
+            rawText: fullText, 
+            symbol: "BATCH",
+            timestamp: new Date().toLocaleTimeString(),
+            groundingSources: []
+        },
+        chat: null 
+    };
+
+  } catch (error) {
+      console.error("Batch Error", error);
+      throw new Error("Batch analysis failed.");
+  }
+};
+
+// --- SINGLE STOCK ANALYSIS SERVICE ---
+export const startStockChat = async (
+  stockCode: string, 
+  market: Market, 
+  lang: Language, 
+  mode: AnalysisMode,
+  onStream?: (text: string) => void
+): Promise<ChatSessionResult> => {
   const modelId = "gemini-2.5-flash";
   const marketName = MARKET_CONFIG[lang][market];
   
@@ -250,33 +373,78 @@ export const startStockChat = async (stockCode: string, market: Market, lang: La
       },
     });
 
-    const response = await chat.sendMessage({ message: initialPrompt });
-    let text = response.text || (lang === 'en' ? "No analysis generated." : "未生成分析结果。");
+    const streamResponse = await chat.sendMessageStream({ message: initialPrompt });
     
-    // Parse JSON Block
-    let structuredData: StructuredAnalysisData | undefined;
-    const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
-    if (jsonMatch) {
-      try {
-        structuredData = JSON.parse(jsonMatch[1]);
-        // Remove the JSON block from the display text to keep it clean
-        text = text.replace(jsonMatch[0], '').trim();
-      } catch (e) {
-        console.warn("Failed to parse structured JSON data:", e);
+    let fullText = "";
+    let groundingChunks: any[] = [];
+
+    for await (const chunk of streamResponse) {
+      const c = chunk as GenerateContentResponse;
+      const chunkText = c.text;
+      
+      if (chunkText) {
+        fullText += chunkText;
+        // Invoke callback to update UI in real-time
+        if (onStream) {
+          onStream(fullText);
+        }
+      }
+
+      // Collect grounding chunks as they arrive
+      if (c.candidates?.[0]?.groundingMetadata?.groundingChunks) {
+        groundingChunks.push(...c.candidates[0].groundingMetadata.groundingChunks);
       }
     }
+    
+    // Fallback if empty
+    let text = fullText || (lang === 'en' ? "No analysis generated." : "未生成分析结果。");
+    
+    // Parse JSON Block (Final processing)
+    let structuredData: StructuredAnalysisData | undefined;
+    
+    // Improved Regex:
+    // 1. Target code blocks that specifically contain our keywords ("signal", "entryPrice") to avoid removing other code blocks.
+    // 2. Use 'g' flag isn't needed if we match the one at the end, but allow matching anywhere if model ignores "at the end".
+    const jsonBlockRegex = /```(?:json)?\s*(\{[\s\S]*?"signal"[\s\S]*?"entryPrice"[\s\S]*?\})\s*```/i;
+    // Also support raw JSON at the very end if code blocks are missing
+    const rawJsonRegex = /(\{[\s\S]*?"signal"[\s\S]*?"entryPrice"[\s\S]*?\})\s*$/i;
 
-    const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+    let match = text.match(jsonBlockRegex);
+    let jsonStr = '';
+
+    if (match) {
+        jsonStr = match[1];
+        text = text.replace(match[0], '').trim(); // Remove the identified block
+    } else {
+        // Fallback: Check for raw JSON at the end
+        match = text.match(rawJsonRegex);
+        if (match) {
+             jsonStr = match[1];
+             text = text.replace(match[0], '').trim();
+        }
+    }
+
+    if (jsonStr) {
+        try {
+            structuredData = JSON.parse(jsonStr);
+        } catch (e) {
+            console.warn("JSON Parse Error", e);
+        }
+    }
+
     const groundingSources = groundingChunks
       .map((chunk) => chunk.web)
       .filter((web) => web !== undefined) as Array<{ uri: string; title: string }>;
+
+    // Remove duplicates from grounding sources based on URI
+    const uniqueSources = Array.from(new Map(groundingSources.map(s => [s.uri, s])).values()) as Array<{ uri: string; title: string }>;
 
     return {
       analysis: {
         rawText: text,
         symbol: stockCode,
         timestamp: new Date().toLocaleTimeString(),
-        groundingSources,
+        groundingSources: uniqueSources,
         structuredData,
       },
       chat: chat
@@ -284,16 +452,31 @@ export const startStockChat = async (stockCode: string, market: Market, lang: La
   } catch (error) {
     console.error("Gemini Analysis Error:", error);
     const errorMsg = lang === 'en' 
-      ? "Failed to analyze. Please check API Key in deployment settings."
-      : "分析失败。请检查部署设置中的 API Key 配置。";
+      ? "Failed to analyze. Please check API Key or try again later."
+      : "分析失败。请检查网络或 API Key 设置。";
     throw new Error(error instanceof Error ? error.message : errorMsg);
   }
 };
 
-export const sendFollowUpMessage = async (chat: Chat, message: string): Promise<string> => {
+export const sendFollowUpMessage = async (
+  chat: Chat, 
+  message: string,
+  onStream?: (text: string) => void
+): Promise<string> => {
   try {
-    const response = await chat.sendMessage({ message });
-    return response.text;
+    const streamResponse = await chat.sendMessageStream({ message });
+    let fullText = "";
+
+    for await (const chunk of streamResponse) {
+      const c = chunk as GenerateContentResponse;
+      if (c.text) {
+        fullText += c.text;
+        if (onStream) {
+          onStream(fullText);
+        }
+      }
+    }
+    return fullText;
   } catch (error) {
     console.error("Follow-up Error:", error);
     throw new Error("Failed to process follow-up message.");

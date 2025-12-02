@@ -19,7 +19,19 @@ export interface StructuredAnalysisData {
   targetPrice: number;
 }
 
+export interface BatchItem {
+  code: string;
+  name?: string;
+  price: string;
+  change: string;
+  signal: string;
+  confidence: number;
+  reason: string;
+}
+
 export interface AnalysisResult {
+  isBatch?: boolean;
+  batchData?: BatchItem[];
   rawText: string;
   symbol: string;
   timestamp: string;
