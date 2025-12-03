@@ -864,6 +864,21 @@ const App: React.FC = () => {
                 
                 {singleResult && (
                   <div className="flex items-center gap-2">
+                     {/* Save to Portfolio Button */}
+                     <button 
+                       onClick={() => toggleWatchlist(singleResult.symbol)}
+                       className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors flex items-center gap-2 ${
+                           isSaved(singleResult.symbol) 
+                           ? 'bg-yellow-900/20 text-yellow-400 border-yellow-900/50 hover:bg-yellow-900/30' 
+                           : 'bg-slate-800 text-slate-300 border-slate-700 hover:bg-slate-700'
+                       }`}
+                     >
+                       <svg className="w-3.5 h-3.5" fill={isSaved(singleResult.symbol) ? "currentColor" : "none"} viewBox="0 0 24 24" stroke="currentColor">
+                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+                       </svg>
+                       {isSaved(singleResult.symbol) ? (language === 'en' ? 'Saved' : '已收藏') : (language === 'en' ? 'Save' : '收藏')}
+                     </button>
+
                      <button 
                        onClick={handleDownloadMD}
                        className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium border border-slate-700 transition-colors flex items-center gap-2"
@@ -902,7 +917,7 @@ const App: React.FC = () => {
                               <span>{market} | {singleResult ? singleResult.timestamp : 'Streaming...'}</span>
                               {!singleResult && <span className="animate-spin">⟳</span>}
                           </div>
-                          {/* Watchlist Toggle for Single View */}
+                          {/* Watchlist Toggle for Single View - Kept for card context */}
                           {singleResult && (
                              <button 
                                 onClick={() => toggleWatchlist(singleResult.symbol)}
