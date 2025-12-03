@@ -1,5 +1,5 @@
-import { GoogleGenAI, Chat, GenerateContentResponse } from "@google/genai";
-import { AnalysisResult, Language, Market, AnalysisMode, StructuredAnalysisData, BatchItem, PortfolioItem } from "../types";
+import { GoogleGenAI, Chat, GenerateContentResponse, Type, Schema } from "@google/genai";
+import { AnalysisResult, Language, Market, AnalysisMode, StructuredAnalysisData, BatchItem } from "../types";
 
 const MARKET_CONFIG = {
   en: {
@@ -53,48 +53,6 @@ const getGenAIClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
-// --- HELPER: Safe JSON Parser ---
-const safeJsonParse = (text: string): any => {
-    try {
-        // 1. Remove Markdown code blocks
-        let cleanText = text.replace(new RegExp("```(?:json)?", "gi"), "").replace(new RegExp("```", "g"), "").trim();
-        
-        // 2. Remove comments (single line and multi-line)
-        cleanText = cleanText.replace(new RegExp("//.*", "g"), "").replace(new RegExp("/\\*[\\s\\S]*?\\*/", "g"), "");
-
-        // 3. Find first '[' or '{' and last ']' or '}'
-        const firstArr = cleanText.indexOf('\x5B'); // [
-        const firstObj = cleanText.indexOf('\x7B'); // {
-        const lastArr = cleanText.lastIndexOf('\x5D'); // ]
-        const lastObj = cleanText.lastIndexOf('\x7D'); // }
-
-        let start = -1;
-        let end = -1;
-
-        // Determine if array or object comes first
-        if (firstArr !== -1 && (firstObj === -1 || firstArr < firstObj)) {
-             start = firstArr;
-             end = lastArr;
-        } else if (firstObj !== -1) {
-             start = firstObj;
-             end = lastObj;
-        }
-
-        if (start !== -1 && end !== -1 && end > start) {
-            cleanText = cleanText.substring(start, end + 1);
-        }
-
-        // 4. Handle trailing commas before closing brackets/braces
-        // Replace ,] with ] and ,} with }
-        cleanText = cleanText.replace(new RegExp(",\\s*\x5D", "g"), "\x5D").replace(new RegExp(",\\s*\x7D", "g"), "\x7D");
-
-        return JSON.parse(cleanText);
-    } catch (e) {
-        console.warn("Safe JSON Parse failed:", e);
-        return null;
-    }
-};
-
 // --- SMART DISCOVERY SERVICE ---
 export const discoverStocksByTheme = async (
   theme: string,
@@ -134,80 +92,23 @@ export const discoverStocksByTheme = async (
 
     // Parse JSON Array
     let codes: string[] = [];
-    const parsed = safeJsonParse(text);
-    if (parsed && Array.isArray(parsed)) {
-        codes = parsed;
+    const jsonMatch = text.match(/\[[\s\S]*?\]/);
+    if (jsonMatch) {
+      try {
+        codes = JSON.parse(jsonMatch[0]);
+      } catch (e) {
+        console.warn("Discovery JSON parse failed", e);
+      }
     }
 
     // Clean codes (remove .SH, .SZ suffixes if present, though we want raw codes mostly)
     // A-Share codes are usually 6 digits.
-    return codes.map(c => c.toString().replace(new RegExp("[^a-zA-Z0-9]", "g"), '')).slice(0, 6); // Limit to top 6
+    return codes.map(c => c.replace(/[^a-zA-Z0-9]/g, '')).slice(0, 6); // Limit to top 6
 
   } catch (error) {
     console.error("Smart Discovery Error", error);
     throw new Error("Failed to discover stocks.");
   }
-};
-
-// --- PORTFOLIO PARSING SERVICE ---
-export const parsePortfolioScreenshot = async (
-    imageBase64: string,
-    market: Market,
-    lang: Language
-): Promise<PortfolioItem[]> => {
-    const modelId = "gemini-2.5-flash";
-    const prompt = lang === 'en' 
-      ? `Analyze this portfolio screenshot. Extract stock holdings.
-         Return JSON Array: [{ "code": "string", "name": "string", "quantity": number, "avgCost": number }].
-         If code is missing, INFER it from the name (e.g. 'AAPL' for Apple). For A-Shares, infer 6-digit code.`
-      : `分析这张持仓截图。提取持仓信息。
-         对于类似同花顺等APP截图，如果**没有直接显示股票代码**，你必须根据**股票名称**（如“云天化”）去推断并填充正确的 A股6位代码（如“600096”）。这是必须的。
-         列映射提示：
-         - "持仓/可用" -> quantity (取持仓数)
-         - "成本/现价" -> avgCost (取成本价，通常是第一行的数字)
-         
-         返回严格的 JSON 数组: [{ "code": "代码", "name": "名称", "quantity": 数量, "avgCost": 成本均价 }]。
-         不要输出 markdown，只输出 JSON。`;
-
-    try {
-        const ai = getGenAIClient();
-        const chat = ai.chats.create({
-            model: modelId,
-            config: {
-                systemInstruction: "You are a data extraction assistant. Output strict JSON only.",
-                temperature: 0.1
-            }
-        });
-
-        // Strip data prefix if present
-        const base64Data = imageBase64.split(',')[1] || imageBase64;
-        const mimeType = imageBase64.match(new RegExp("data:([^;]+);"))?.[1] || 'image/jpeg';
-
-        const response = await chat.sendMessage({
-            message: [
-                { text: prompt },
-                { inlineData: { mimeType, data: base64Data } }
-            ]
-        });
-
-        const text = response.text || "";
-        const parsed = safeJsonParse(text);
-
-        if (Array.isArray(parsed)) {
-            return parsed.map((item: any) => ({
-                code: item.code || "UNKNOWN",
-                market: market,
-                addedAt: Date.now(),
-                name: item.name,
-                quantity: Number(item.quantity) || 0,
-                avgCost: Number(item.avgCost) || 0
-            }));
-        }
-        return [];
-    } catch (error) {
-        console.error("Portfolio Parse Error", error);
-        return [];
-    }
 };
 
 // --- BATCH ANALYSIS SERVICE ---
@@ -221,45 +122,30 @@ export const startBatchAnalysis = async (
   const marketName = MARKET_CONFIG[lang][market];
   const codeList = stockCodes.join(", ");
   
+  // NOTE: responseSchema CANNOT be used with googleSearch tool in the current API version.
+  // We must rely on prompt engineering to get JSON.
+  
   const systemInstruction = lang === 'en'
-    ? `You are a Strict Data Aggregator. User provides stock codes. 
-       Get REAL-TIME data. 
-       ANTI-HALLUCINATION RULE: If you cannot find the EXACT LATEST price in the search results, return "N/A" or the last available closing price and clearly mark the date. DO NOT INVENT NUMBERS.
-       CRITICAL: Return strictly a JSON array. No markdown.`
-    : `你是一位严谨的数据聚合师。用户提供股票代码。
-       请获取**实时**数据。
-       **反幻觉铁律**: 如果搜索结果中没有找到该股票**今日**的明确价格，必须返回 'N/A' 或**上一个交易日收盘价**，并必须在 "lastUpdated" 字段中注明日期。
-       **严禁**捏造价格或张冠李戴（务必核对股票名称与代码是否匹配）。
-       **关键**: 仅返回严格的 JSON 数组。`;
+    ? `You are a Quantitative Analyst. User will provide a list of stocks. 
+       Get real-time data for ALL of them using the search tool.
+       CRITICAL OUTPUT RULE: You must return the result as a STRICT JSON ARRAY ONLY.
+       Do NOT write any introduction, explanation, or markdown text outside the JSON block.
+       The JSON should be an array of objects.`
+    : `你是一位量化分析师。用户将提供一组股票代码。
+       请利用搜索工具获取所有股票的实时数据。
+       **关键输出规则**: 必须仅返回一个严格的 JSON 数组。
+       不要在 JSON 之外输出任何介绍、解释或 Markdown 文本。
+       JSON 必须是一个对象数组。`;
 
   const prompt = lang === 'en' 
     ? `Analyze these stocks in ${marketName}: [${codeList}].
-       Fetch LATEST price (check date carefully!).
-       
-       Return JSON Array:
-       {
-         "code": "string",
-         "name": "string", 
-         "price": "string (e.g. 33.35)", 
-         "lastUpdated": "string (e.g. 12-02 15:00 or 'Yesterday Close')",
-         "change": "string (e.g. +1.2%)", 
-         "signal": "BUY/SELL/HOLD/WAIT", 
-         "confidence": number, 
-         "reason": "summary", 
-         "targetPrice": "string", 
-         "stopLoss": "string", 
-         "action": "Next day strategy"
-       }`
+       Fetch latest price, change%, and technical summary for each.
+       Return a JSON Array where each object has these keys: 
+       "code" (string), "name" (string), "price" (string), "change" (string, include + or -), "signal" (BUY/SELL/HOLD/WAIT), "confidence" (number 0-100), "reason" (short summary string).`
     : `分析 ${marketName} 的这些股票: [${codeList}]。
-       
-       **任务要求**:
-       1. 获取**最新**价格和涨跌幅。如果今日未开盘或数据缺失，使用**最近一次收盘数据**。
-       2. **必须**填写 "lastUpdated" 字段，注明数据的时间来源（例如 "12-02 15:00" 或 "昨日收盘"）。
-       3. 计算 "targetPrice" (第一止盈) 和 "stopLoss" (刚性止损)。
-       4. 生成 "action" (明日简令)。
-
-       返回 JSON 数组，包含:
-       "code", "name", "price", "lastUpdated" (重要!), "change", "signal", "confidence", "reason", "targetPrice", "stopLoss", "action".`;
+       获取每只股票的最新价格、涨跌幅和技术面摘要。
+       返回一个 JSON 数组，每个对象包含以下键:
+       "code" (代码), "name" (名称), "price" (价格), "change" (涨跌幅, 带符号), "signal" (BUY/SELL/HOLD/WAIT), "confidence" (置信度数值 0-100), "reason" (简短理由)。`;
 
   try {
     const ai = getGenAIClient();
@@ -269,6 +155,7 @@ export const startBatchAnalysis = async (
         tools: [{ googleSearch: {} }],
         temperature: 0.1,
         systemInstruction: systemInstruction,
+        // responseMimeType and responseSchema REMOVED to avoid conflict with tools
       },
     });
 
@@ -283,21 +170,44 @@ export const startBatchAnalysis = async (
     }
 
     let batchData: BatchItem[] = [];
-    const parsed = safeJsonParse(fullText);
-
-    if (parsed) {
-        if (Array.isArray(parsed)) {
-            batchData = parsed;
-        } else if (typeof parsed === 'object') {
-             // Handle single object return
-             // @ts-ignore
-             batchData = [parsed];
+    
+    // Robust JSON Parsing Logic
+    try {
+        // 1. Try parsing raw text directly
+        batchData = JSON.parse(fullText);
+    } catch (e) {
+        // 2. Try extracting from Markdown Code Block ```json ... ```
+        const jsonBlockMatch = fullText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
+        if (jsonBlockMatch) {
+            try {
+                batchData = JSON.parse(jsonBlockMatch[1]);
+            } catch (e2) {
+                console.warn("Failed to parse JSON block in batch mode", e2);
+            }
+        } else {
+             // 3. Try finding the first '[' and last ']'
+             const firstBracket = fullText.indexOf('[');
+             const lastBracket = fullText.lastIndexOf(']');
+             if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
+                 try {
+                     const potentialJson = fullText.substring(firstBracket, lastBracket + 1);
+                     batchData = JSON.parse(potentialJson);
+                 } catch (e3) {
+                     console.warn("Failed to parse extracted array", e3);
+                 }
+             }
         }
     }
 
-    if (batchData.length === 0) {
+    if (!Array.isArray(batchData) || batchData.length === 0) {
         console.error("Batch Analysis yielded no valid JSON array:", fullText);
-        throw new Error("Invalid JSON format received from AI.");
+        // Fallback for single item if somehow object returned instead of array
+        if (batchData && typeof batchData === 'object' && !Array.isArray(batchData)) {
+            // @ts-ignore
+            batchData = [batchData];
+        } else {
+            throw new Error("Invalid JSON format received from AI.");
+        }
     }
 
     return {
@@ -542,7 +452,7 @@ export const startStockChat = async (
     if (imageBase64) {
         // Strip data prefix if present (e.g. data:image/png;base64,)
         const base64Data = imageBase64.split(',')[1] || imageBase64;
-        const mimeType = imageBase64.match(new RegExp("data:([^;]+);"))?.[1] || 'image/jpeg';
+        const mimeType = imageBase64.match(/data:([^;]+);/)?.[1] || 'image/jpeg';
         
         messageContent = [
             { text: initialPrompt },
@@ -566,28 +476,47 @@ export const startStockChat = async (
       
       if (chunkText) {
         fullText += chunkText;
+        // Invoke callback to update UI in real-time
         if (onStream) {
           onStream(fullText);
         }
       }
 
+      // Collect grounding chunks as they arrive
       if (c.candidates?.[0]?.groundingMetadata?.groundingChunks) {
         groundingChunks.push(...c.candidates[0].groundingMetadata.groundingChunks);
       }
     }
     
+    // Fallback if empty
     let text = fullText || (lang === 'en' ? "No analysis generated." : "未生成分析结果。");
     
-    // Parse Config JSON
+    // Parse JSON Block (Final processing)
     let structuredData: StructuredAnalysisData | undefined;
     
-    // Use safeJsonParse to extract the last JSON block
-    const parsed = safeJsonParse(text);
-    if (parsed && !Array.isArray(parsed) && parsed.signal) {
-        structuredData = parsed;
-        // Optionally clean the text display
-        // We do a simple replace of the last JSON block pattern if possible to keep UI clean
-        // But markdown renderer also handles this.
+    const jsonBlockRegex = /```(?:json)?\s*(\{[\s\S]*?"signal"[\s\S]*?"entryPrice"[\s\S]*?\})\s*```/i;
+    const rawJsonRegex = /(\{[\s\S]*?"signal"[\s\S]*?"entryPrice"[\s\S]*?\})\s*$/i;
+
+    let match = text.match(jsonBlockRegex);
+    let jsonStr = '';
+
+    if (match) {
+        jsonStr = match[1];
+        text = text.replace(match[0], '').trim(); 
+    } else {
+        match = text.match(rawJsonRegex);
+        if (match) {
+             jsonStr = match[1];
+             text = text.replace(match[0], '').trim();
+        }
+    }
+
+    if (jsonStr) {
+        try {
+            structuredData = JSON.parse(jsonStr);
+        } catch (e) {
+            console.warn("JSON Parse Error", e);
+        }
     }
 
     const groundingSources = groundingChunks

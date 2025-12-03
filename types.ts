@@ -27,10 +27,6 @@ export interface BatchItem {
   signal: string;
   confidence: number;
   reason: string;
-  targetPrice?: string;
-  stopLoss?: string;
-  action?: string;
-  lastUpdated?: string;
 }
 
 export interface AnalysisResult {
@@ -68,6 +64,4 @@ export interface PortfolioItem {
   market: Market;
   addedAt: number;
   name?: string;
-  quantity?: number;
-  avgCost?: number;
 }
