@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { startStockChat, startBatchAnalysis, sendFollowUpMessage, discoverStocksByTheme } from './services/geminiService';
-import { AnalysisResult, Language, Market, ChatMessage, AnalysisMode, BatchItem } from './types';
+import { AnalysisResult, Language, Market, ChatMessage, AnalysisMode, BatchItem, PortfolioItem } from './types';
 import { TerminalLoader } from './components/TerminalLoader';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { QuantTools } from './components/QuantTools';
@@ -67,7 +67,16 @@ const TRANSLATIONS = {
         discovery: "🔍 Smart Discovery"
     },
     discovering: "Scanning market for related assets...",
-    uploadImage: "Analyze Chart/Image"
+    uploadImage: "Analyze Chart/Image",
+    watchlist: {
+      title: "My Watchlist",
+      empty: "No stocks saved. Add favorites from analysis results or import a backup.",
+      analyzeAll: "Analyze All",
+      import: "Import JSON",
+      export: "Export JSON",
+      added: "Added to Watchlist",
+      removed: "Removed from Watchlist"
+    }
   },
   zh: {
     subtitle: "全球量化分析系统 v2.5",
@@ -129,7 +138,16 @@ const TRANSLATIONS = {
         discovery: "🔍 智能选股"
     },
     discovering: "正在挖掘相关标的...",
-    uploadImage: "分析图表/截图"
+    uploadImage: "分析图表/截图",
+    watchlist: {
+      title: "我的自选股",
+      empty: "暂无自选股。请在分析结果中收藏，或导入备份文件。",
+      analyzeAll: "一键全部分析",
+      import: "导入 JSON",
+      export: "导出 JSON",
+      added: "已加入自选",
+      removed: "已移出自选"
+    }
   }
 };
 
@@ -153,9 +171,20 @@ const App: React.FC = () => {
   const [streamingAnalysisText, setStreamingAnalysisText] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
+  // Portfolio State
+  const [portfolio, setPortfolio] = useState<PortfolioItem[]>(() => {
+    try {
+      const saved = localStorage.getItem('quant_portfolio');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+
   // Image State
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   // Separate results for Batch and Single to support navigation
   const [singleResult, setSingleResult] = useState<AnalysisResult | null>(null);
@@ -171,6 +200,11 @@ const App: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const t = TRANSLATIONS[language];
+
+  // Persist Portfolio
+  useEffect(() => {
+    localStorage.setItem('quant_portfolio', JSON.stringify(portfolio));
+  }, [portfolio]);
 
   // Scroll to bottom when chat history updates
   useEffect(() => {
@@ -194,6 +228,69 @@ const App: React.FC = () => {
       if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  // --- Portfolio Handlers ---
+  const toggleWatchlist = (code: string, name?: string) => {
+    setPortfolio(prev => {
+      const exists = prev.find(p => p.code === code);
+      if (exists) {
+        return prev.filter(p => p.code !== code);
+      } else {
+        return [...prev, { code, market, addedAt: Date.now(), name }];
+      }
+    });
+  };
+
+  const isSaved = (code: string) => {
+    return portfolio.some(p => p.code === code);
+  };
+
+  const handleExportPortfolio = () => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(portfolio));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("download", `quant_watchlist_${new Date().toISOString().slice(0,10)}.json`);
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+  };
+
+  const handleImportPortfolio = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      try {
+        const imported = JSON.parse(event.target?.result as string);
+        if (Array.isArray(imported)) {
+          // Merge logic: avoid duplicates
+          setPortfolio(prev => {
+            const combined = [...prev];
+            imported.forEach((item: PortfolioItem) => {
+              if (!combined.some(p => p.code === item.code)) {
+                combined.push(item);
+              }
+            });
+            return combined;
+          });
+          alert("Import successful!");
+        }
+      } catch (err) {
+        alert("Invalid JSON file.");
+      }
+    };
+    reader.readAsText(file);
+    // Reset input
+    if (importInputRef.current) importInputRef.current.value = '';
+  };
+
+  const handleAnalyzePortfolio = async () => {
+    // Filter items for current market
+    const marketItems = portfolio.filter(p => p.market === market);
+    if (marketItems.length === 0) return;
+    const codes = marketItems.map(p => p.code);
+    await runAnalysis(codes, false);
+  };
+
   // Main Entry Point for Analysis
   const runAnalysis = async (codes: string[], fromBatchClick: boolean = false, imageBase64?: string) => {
     // Force Single Mode if Image is present
@@ -211,6 +308,18 @@ const App: React.FC = () => {
         // --- BATCH MODE ---
         // 1. Fetch Batch Data
         const { analysis } = await startBatchAnalysis(codes, market, language);
+        
+        // Auto-update portfolio names if found
+        if (analysis.batchData) {
+            setPortfolio(prev => prev.map(p => {
+                const match = analysis.batchData?.find(b => b.code === p.code);
+                if (match && match.name) {
+                    return { ...p, name: match.name };
+                }
+                return p;
+            }));
+        }
+
         // 2. Update State
         setBatchCache(analysis);
         setViewState('BATCH_LIST');
@@ -400,6 +509,9 @@ const App: React.FC = () => {
     return 'text-slate-400 bg-slate-800 border-slate-700';
   };
 
+  // Filter portfolio for current view
+  const currentMarketPortfolio = portfolio.filter(p => p.market === market);
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-blue-500/30">
       {/* Header */}
@@ -549,6 +661,49 @@ const App: React.FC = () => {
                    </div>
                 </div>
 
+                {/* --- WATCHLIST SECTION --- */}
+                <div className="mt-8 pt-8 border-t border-slate-900">
+                    <div className="flex justify-between items-center mb-4 px-2">
+                        <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
+                            {t.watchlist.title} ({t.markets[market]})
+                        </h3>
+                        <div className="flex gap-2">
+                            <input type="file" ref={importInputRef} accept=".json" onChange={handleImportPortfolio} hidden />
+                            <button onClick={() => importInputRef.current?.click()} className="text-[10px] text-slate-600 hover:text-blue-400 transition-colors">{t.watchlist.import}</button>
+                            <span className="text-slate-800">|</span>
+                            <button onClick={handleExportPortfolio} className="text-[10px] text-slate-600 hover:text-blue-400 transition-colors">{t.watchlist.export}</button>
+                        </div>
+                    </div>
+                    
+                    {currentMarketPortfolio.length > 0 ? (
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                             {currentMarketPortfolio.map(item => (
+                                 <div key={item.code} className="bg-slate-900 border border-slate-800 rounded-lg p-3 relative group hover:border-slate-700 transition-colors">
+                                     <div className="flex justify-between items-start">
+                                         <div onClick={() => runAnalysis([item.code])} className="cursor-pointer">
+                                             <div className="font-bold text-white font-mono">{item.code}</div>
+                                             {item.name && <div className="text-[10px] text-slate-500 truncate max-w-[80px]">{item.name}</div>}
+                                         </div>
+                                         <button onClick={() => toggleWatchlist(item.code)} className="text-slate-600 hover:text-rose-400">
+                                             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
+                                         </button>
+                                     </div>
+                                 </div>
+                             ))}
+                             <div className="col-span-2 md:col-span-4 mt-2 text-center">
+                                 <button onClick={handleAnalyzePortfolio} className="w-full py-2 bg-slate-900/50 hover:bg-blue-900/20 text-blue-400 border border-blue-900/30 border-dashed rounded-lg text-sm font-medium transition-colors">
+                                    {t.watchlist.analyzeAll} ({currentMarketPortfolio.length})
+                                 </button>
+                             </div>
+                        </div>
+                    ) : (
+                        <div className="text-center py-6 border border-dashed border-slate-900 rounded-xl">
+                            <div className="text-slate-600 text-sm">{t.watchlist.empty}</div>
+                        </div>
+                    )}
+                </div>
+
             </div>
           </div>
         )}
@@ -610,6 +765,7 @@ const App: React.FC = () => {
                     <table className="w-full text-left border-collapse">
                         <thead>
                             <tr className="bg-slate-950/50 text-xs uppercase text-slate-500 font-bold border-b border-slate-800">
+                                <th className="p-5 tracking-wider w-12"></th>
                                 <th className="p-5 tracking-wider">Symbol</th>
                                 <th className="p-5 tracking-wider">Price Info</th>
                                 <th className="p-5 tracking-wider">AI Signal</th>
@@ -620,6 +776,15 @@ const App: React.FC = () => {
                         <tbody className="divide-y divide-slate-800">
                             {batchCache.batchData.map((item, idx) => (
                                 <tr key={idx} className="hover:bg-slate-800/40 transition-colors group">
+                                    <td className="p-5 text-center">
+                                        <button 
+                                            onClick={() => toggleWatchlist(item.code, item.name)}
+                                            className={`hover:scale-110 transition-transform ${isSaved(item.code) ? 'text-yellow-400' : 'text-slate-700 hover:text-yellow-400'}`}
+                                            title={isSaved(item.code) ? t.watchlist.removed : t.watchlist.added}
+                                        >
+                                            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
+                                        </button>
+                                    </td>
                                     <td className="p-5">
                                         <div className="font-bold text-lg text-white group-hover:text-blue-400 transition-colors">{item.code}</div>
                                         <div className="text-xs text-slate-500">{item.name}</div>
@@ -732,9 +897,21 @@ const App: React.FC = () => {
                             <path d="M16 6l2.29 2.29-4.88 4.88-4-4L2 16.59 3.41 18l6-6 4 4 6.3-6.29L22 12V6z"/>
                           </svg>
                       </div>
-                      <div className="mb-4 text-xs text-slate-500 font-mono no-print flex justify-between">
-                          <span>{market} | {singleResult ? singleResult.timestamp : 'Streaming...'}</span>
-                          {!singleResult && <span className="animate-spin">⟳</span>}
+                      <div className="mb-4 text-xs text-slate-500 font-mono no-print flex justify-between items-center">
+                          <div className="flex gap-2 items-center">
+                              <span>{market} | {singleResult ? singleResult.timestamp : 'Streaming...'}</span>
+                              {!singleResult && <span className="animate-spin">⟳</span>}
+                          </div>
+                          {/* Watchlist Toggle for Single View */}
+                          {singleResult && (
+                             <button 
+                                onClick={() => toggleWatchlist(singleResult.symbol)}
+                                className={`flex items-center gap-1.5 px-2 py-1 rounded-full border transition-colors ${isSaved(singleResult.symbol) ? 'bg-yellow-900/20 text-yellow-400 border-yellow-900/50' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'}`}
+                             >
+                                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
+                                {isSaved(singleResult.symbol) ? t.watchlist.removed : t.watchlist.added}
+                             </button>
+                          )}
                       </div>
                       <MarkdownRenderer content={displayContent} />
                    </div>

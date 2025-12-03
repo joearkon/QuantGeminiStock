@@ -58,3 +58,10 @@ export interface ChatMessage {
   content: string;
   timestamp: string;
 }
+
+export interface PortfolioItem {
+  code: string;
+  market: Market;
+  addedAt: number;
+  name?: string;
+}
