@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { startStockChat, startBatchAnalysis, sendFollowUpMessage, discoverStocksByTheme } from './services/geminiService';
+import { startStockChat, startBatchAnalysis, sendFollowUpMessage, discoverStocksByTheme, parsePortfolioScreenshot } from './services/geminiService';
 import { AnalysisResult, Language, Market, ChatMessage, AnalysisMode, BatchItem, PortfolioItem } from './types';
 import { TerminalLoader } from './components/TerminalLoader';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
@@ -151,7 +151,6 @@ const TRANSLATIONS = {
   }
 };
 
-// Define specific View States for clearer navigation logic
 type ViewState = 'HOME' | 'BATCH_LIST' | 'SINGLE_REPORT';
 type SearchMode = 'CODE' | 'DISCOVERY';
 
@@ -162,16 +161,13 @@ const App: React.FC = () => {
   const [language, setLanguage] = useState<Language>('zh');
   const [searchMode, setSearchMode] = useState<SearchMode>('CODE');
   
-  // Navigation State
   const [viewState, setViewState] = useState<ViewState>('HOME');
   
-  // Data States
   const [isLoading, setIsLoading] = useState(false); 
-  const [loadingText, setLoadingText] = useState<string>(''); // Custom loading text
+  const [loadingText, setLoadingText] = useState<string>('');
   const [streamingAnalysisText, setStreamingAnalysisText] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
 
-  // Portfolio State
   const [portfolio, setPortfolio] = useState<PortfolioItem[]>(() => {
     try {
       const saved = localStorage.getItem('quant_portfolio');
@@ -181,37 +177,34 @@ const App: React.FC = () => {
     }
   });
 
-  // Image State
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
 
-  // Separate results for Batch and Single to support navigation
   const [singleResult, setSingleResult] = useState<AnalysisResult | null>(null);
-  const [batchCache, setBatchCache] = useState<AnalysisResult | null>(null); // Store batch data here
+  const [batchCache, setBatchCache] = useState<AnalysisResult | null>(null);
 
-  // Chat Session State
   const chatSessionRef = useRef<Chat | null>(null);
   const [chatHistory, setChatHistory] = useState<ChatMessage[]>([]);
   const [followUpInput, setFollowUpInput] = useState('');
   const [isFollowUpLoading, setIsFollowUpLoading] = useState(false);
   
-  // Ref for auto-scrolling
   const messagesEndRef = useRef<HTMLDivElement>(null);
-
   const t = TRANSLATIONS[language];
 
-  // Persist Portfolio
   useEffect(() => {
-    localStorage.setItem('quant_portfolio', JSON.stringify(portfolio));
+    try {
+        localStorage.setItem('quant_portfolio', JSON.stringify(portfolio));
+    } catch (e) {
+        // ignore
+    }
   }, [portfolio]);
 
-  // Scroll to bottom when chat history updates
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory, streamingAnalysisText]);
 
-  // Handle Image Upload
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
@@ -228,7 +221,6 @@ const App: React.FC = () => {
       if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  // --- Portfolio Handlers ---
   const toggleWatchlist = (code: string, name?: string) => {
     setPortfolio(prev => {
       const exists = prev.find(p => p.code === code);
@@ -238,6 +230,15 @@ const App: React.FC = () => {
         return [...prev, { code, market, addedAt: Date.now(), name }];
       }
     });
+  };
+
+  const updatePortfolioItem = (code: string, field: 'quantity' | 'avgCost', value: number) => {
+      setPortfolio(prev => prev.map(p => {
+          if (p.code === code) {
+              return { ...p, [field]: value };
+          }
+          return p;
+      }));
   };
 
   const isSaved = (code: string) => {
@@ -262,7 +263,6 @@ const App: React.FC = () => {
       try {
         const imported = JSON.parse(event.target?.result as string);
         if (Array.isArray(imported)) {
-          // Merge logic: avoid duplicates
           setPortfolio(prev => {
             const combined = [...prev];
             imported.forEach((item: PortfolioItem) => {
@@ -272,44 +272,79 @@ const App: React.FC = () => {
             });
             return combined;
           });
-          alert("Import successful!");
+          // alert("Import successful!");
         }
       } catch (err) {
-        alert("Invalid JSON file.");
+        // alert("Invalid JSON file.");
       }
     };
     reader.readAsText(file);
-    // Reset input
     if (importInputRef.current) importInputRef.current.value = '';
   };
 
+  const handleScreenshotImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+          const base64 = reader.result as string;
+          setIsLoading(true);
+          setLoadingText(language === 'en' ? 'Analyzing Screenshot...' : '正在解析持仓截图...');
+          try {
+              const items = await parsePortfolioScreenshot(base64, market, language);
+              if (items.length > 0) {
+                  setPortfolio(prev => {
+                      const combined = [...prev];
+                      items.forEach(newItem => {
+                          const existingIdx = combined.findIndex(p => p.code === newItem.code);
+                          if (existingIdx >= 0) {
+                              combined[existingIdx] = { 
+                                  ...combined[existingIdx], 
+                                  quantity: newItem.quantity,
+                                  avgCost: newItem.avgCost 
+                              };
+                          } else {
+                              combined.push(newItem);
+                          }
+                      });
+                      return combined;
+                  });
+              } else {
+                  setError(language === 'en' ? "No stocks identified in screenshot." : "未识别到有效持仓，请检查截图是否清晰");
+              }
+          } catch (err) {
+              setError(language === 'en' ? "Screenshot parsing failed." : "截图解析失败");
+          } finally {
+              setIsLoading(false);
+              setLoadingText('');
+          }
+      };
+      reader.readAsDataURL(file);
+      if (cameraInputRef.current) cameraInputRef.current.value = '';
+  };
+
   const handleAnalyzePortfolio = async () => {
-    // Filter items for current market
     const marketItems = portfolio.filter(p => p.market === market);
     if (marketItems.length === 0) return;
     const codes = marketItems.map(p => p.code);
     await runAnalysis(codes, false);
   };
 
-  // Main Entry Point for Analysis
   const runAnalysis = async (codes: string[], fromBatchClick: boolean = false, imageBase64?: string) => {
-    // Force Single Mode if Image is present
     const isBatchRequest = codes.length > 1 && !imageBase64;
     
     setIsLoading(true);
-    setLoadingText(''); // Reset custom text
+    setLoadingText(''); 
     setError(null);
     setStreamingAnalysisText(''); 
-    setChatHistory([]); // Clear chat for new single analysis
+    setChatHistory([]);
     chatSessionRef.current = null;
 
     try {
       if (isBatchRequest) {
-        // --- BATCH MODE ---
-        // 1. Fetch Batch Data
         const { analysis } = await startBatchAnalysis(codes, market, language);
         
-        // Auto-update portfolio names if found
         if (analysis.batchData) {
             setPortfolio(prev => prev.map(p => {
                 const match = analysis.batchData?.find(b => b.code === p.code);
@@ -320,37 +355,30 @@ const App: React.FC = () => {
             }));
         }
 
-        // 2. Update State
         setBatchCache(analysis);
         setViewState('BATCH_LIST');
         setIsLoading(false);
       } else {
-        // --- SINGLE MODE ---
-        // If triggered from home search, clear batch cache. 
-        // If triggered from batch click, keep batch cache.
         if (!fromBatchClick) {
             setBatchCache(null);
         }
         
-        // 1. Start Stream
         const { analysis, chat } = await startStockChat(
           codes[0] || (language === 'zh' ? '图片分析' : 'Image Analysis'), 
           market, 
           language, 
           analysisMode,
           (textChunk) => {
-            // Callback: Update UI with streaming text
-            setIsLoading(false); // Stop loader animation
-            setViewState('SINGLE_REPORT'); // Switch view immediately to show stream
+            setIsLoading(false);
+            setViewState('SINGLE_REPORT');
             setStreamingAnalysisText(textChunk);
           },
-          imageBase64 // Pass image if available
+          imageBase64
         );
         
-        // 2. Finalize
         setSingleResult(analysis);
         if (chat) chatSessionRef.current = chat;
-        setStreamingAnalysisText(''); // Clear stream buffer, rely on singleResult.rawText
+        setStreamingAnalysisText(''); 
       }
     } catch (err: any) {
       setError(err.message || "An unexpected error occurred.");
@@ -362,15 +390,12 @@ const App: React.FC = () => {
     e.preventDefault();
     if (!stockCode.trim() && !selectedImage) return;
 
-    // Prioritize Image Analysis (Single Mode)
     if (selectedImage) {
-        // If image is selected, we treat it as a single chat session, potentially with the text input as context
         await runAnalysis([stockCode], false, selectedImage);
         return;
     }
 
     if (searchMode === 'DISCOVERY') {
-        // --- DISCOVERY FLOW ---
         setIsLoading(true);
         setLoadingText(t.discovering);
         try {
@@ -378,28 +403,23 @@ const App: React.FC = () => {
             if (discoveredCodes.length === 0) {
                 throw new Error("No stocks found for this theme.");
             }
-            // Auto-trigger batch analysis with discovered codes
             await runAnalysis(discoveredCodes, false);
         } catch (err: any) {
             setError(err.message || "Discovery failed.");
             setIsLoading(false);
         }
     } else {
-        // --- STANDARD CODE FLOW ---
-        // Split by comma (English and Chinese) or space
-        const codes = stockCode.split(/[\s,\uff0c]+/).filter(c => c.trim().length > 0);
+        const codes = stockCode.split(new RegExp("[\x20\x2C\uFF0C]+")).filter(c => c.trim().length > 0);
         if (codes.length === 0) return;
         await runAnalysis(codes, false);
     }
   };
 
-  // Called when clicking "Deep Dive" in Batch Table
   const handleDeepDive = async (code: string) => {
-      setStockCode(code); // Update input field for consistency
-      await runAnalysis([code], true); // true = keep batch cache
+      setStockCode(code);
+      await runAnalysis([code], true);
   };
 
-  // Called when clicking "Back to Batch Results"
   const handleBackToBatch = () => {
       setSingleResult(null);
       setStreamingAnalysisText('');
@@ -413,7 +433,6 @@ const App: React.FC = () => {
     
     if (!textToSend.trim() || !chatSessionRef.current) return;
 
-    // Add user message
     const userMsg: ChatMessage = {
       role: 'user',
       content: textToSend,
@@ -423,10 +442,9 @@ const App: React.FC = () => {
     setFollowUpInput('');
     setIsFollowUpLoading(true);
 
-    // Create a placeholder model message for streaming
     const placeholderAiMsg: ChatMessage = {
       role: 'model',
-      content: '', // Start empty
+      content: '', 
       timestamp: new Date().toLocaleTimeString()
     };
     setChatHistory(prev => [...prev, placeholderAiMsg]);
@@ -462,11 +480,11 @@ const App: React.FC = () => {
     setBatchCache(null);
     setStreamingAnalysisText('');
     setStockCode('');
-    setSelectedImage(null); // Clear image
+    setSelectedImage(null);
     setError(null);
     setChatHistory([]);
     setViewState('HOME');
-    setSearchMode('CODE'); // Reset to default
+    setSearchMode('CODE');
     chatSessionRef.current = null;
   };
 
@@ -496,10 +514,8 @@ const App: React.FC = () => {
     window.print();
   };
 
-  // Determine Content for Single View
   const displayContent = singleResult ? singleResult.rawText : streamingAnalysisText;
 
-  // Helper to color signals in batch table
   const getBatchSignalColor = (sig: string) => {
     if (!sig) return 'text-slate-400 bg-slate-800 border-slate-700';
     const s = sig.toUpperCase();
@@ -509,12 +525,59 @@ const App: React.FC = () => {
     return 'text-slate-400 bg-slate-800 border-slate-700';
   };
 
-  // Filter portfolio for current view
   const currentMarketPortfolio = portfolio.filter(p => p.market === market);
+
+  // Helper to safely render portfolio map
+  const renderPortfolioItems = () => {
+      if (!currentMarketPortfolio || !Array.isArray(currentMarketPortfolio)) return null;
+      return currentMarketPortfolio.map(item => (
+            <div key={item.code} className="bg-slate-900 border border-slate-800 rounded-lg p-3 relative group hover:border-slate-700 transition-colors">
+                <div className="flex justify-between items-start">
+                    <div onClick={() => runAnalysis([item.code])} className="cursor-pointer">
+                        <div className="font-bold text-white font-mono">{item.code}</div>
+                        {item.name && <div className="text-[10px] text-slate-500 truncate max-w-[80px]">{item.name}</div>}
+                    </div>
+                    
+                    {/* Manual Edit Inputs */}
+                    <div className="flex flex-col gap-1 ml-4 mr-6">
+                        <div className="flex items-center gap-1">
+                            <span className="text-[9px] text-slate-600 w-6">Qty</span>
+                            <input 
+                                type="number" 
+                                value={item.quantity || ''} 
+                                onChange={(e) => updatePortfolioItem(item.code, 'quantity', Number(e.target.value))}
+                                className="w-16 bg-slate-950 border border-slate-800 text-[10px] text-slate-300 rounded px-1 py-0.5 outline-none focus:border-blue-500"
+                                placeholder="0"
+                            />
+                        </div>
+                        <div className="flex items-center gap-1">
+                            <span className="text-[9px] text-slate-600 w-6">Avg</span>
+                            <input 
+                                type="number" 
+                                value={item.avgCost || ''} 
+                                onChange={(e) => updatePortfolioItem(item.code, 'avgCost', Number(e.target.value))}
+                                className="w-16 bg-slate-950 border border-slate-800 text-[10px] text-slate-300 rounded px-1 py-0.5 outline-none focus:border-blue-500"
+                                placeholder="0.00"
+                            />
+                        </div>
+                    </div>
+
+                    <button onClick={() => toggleWatchlist(item.code)} className="absolute top-2 right-2 text-slate-600 hover:text-rose-400">
+                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
+                    </button>
+                </div>
+                {(item.quantity && item.avgCost) ? (
+                    <div className="mt-2 pt-2 border-t border-slate-800 flex justify-between items-center">
+                        <span className="text-[10px] text-slate-500">Amt</span>
+                        <span className="text-xs font-mono text-blue-300">{(item.quantity * item.avgCost).toLocaleString(undefined, {maximumFractionDigits:0})}</span>
+                    </div>
+                ) : null}
+            </div>
+        ));
+  };
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-blue-500/30">
-      {/* Header */}
       <header className="sticky top-0 z-50 backdrop-blur-md bg-slate-950/80 border-b border-slate-800 no-print">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-3 cursor-pointer" onClick={clearAnalysis}>
@@ -533,17 +596,12 @@ const App: React.FC = () => {
              >
                {language === 'en' ? 'CN / EN' : '中 / 英'}
              </button>
-             <div className="text-xs font-mono text-slate-500 hidden sm:block">
-               {t.subtitle}
-             </div>
           </div>
         </div>
       </header>
 
-      {/* Main Container - Width adjusts based on view */}
       <main className={`mx-auto px-4 py-8 ${viewState === 'BATCH_LIST' ? 'max-w-7xl' : 'max-w-6xl'}`}>
         
-        {/* --- 1. HERO & INPUT (Visible only on HOME) --- */}
         {viewState === 'HOME' && !isLoading && (
           <div className="animate-fade-in-up mt-12">
             <div className="text-center mb-10">
@@ -559,7 +617,6 @@ const App: React.FC = () => {
             </div>
 
             <div className="max-w-xl mx-auto space-y-4">
-                {/* Market Selector */}
                 <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800">
                   {(['A_SHARE', 'US_STOCK', 'HK_STOCK'] as Market[]).map((m) => (
                     <button
@@ -576,7 +633,6 @@ const App: React.FC = () => {
                   ))}
                 </div>
 
-                {/* Search Mode Tabs */}
                 <div className="flex justify-between items-end px-2">
                     <div className="flex gap-4">
                         <button 
@@ -594,10 +650,8 @@ const App: React.FC = () => {
                     </div>
                 </div>
 
-                {/* Search Bar Container */}
                 <div className={`bg-slate-900/50 p-2 rounded-2xl border shadow-xl backdrop-blur-sm transition-all hover:shadow-2xl flex flex-col gap-2 ${searchMode === 'DISCOVERY' ? 'border-purple-500/30 hover:border-purple-500/50' : 'border-slate-800 hover:border-slate-700'}`}>
                   
-                  {/* Image Preview */}
                   {selectedImage && (
                       <div className="flex items-center gap-2 p-2 bg-slate-800 rounded-lg w-fit">
                           <img src={selectedImage} alt="Preview" className="h-12 w-12 object-cover rounded border border-slate-700" />
@@ -617,9 +671,7 @@ const App: React.FC = () => {
                       className="w-full bg-transparent text-white text-lg px-6 py-4 outline-none placeholder:text-slate-600 font-mono"
                     />
                     
-                    {/* Action Buttons Right */}
                     <div className="absolute right-2 flex items-center gap-2">
-                        {/* Image Upload Button */}
                         <input 
                             type="file" 
                             accept="image/*" 
@@ -653,7 +705,6 @@ const App: React.FC = () => {
                   </form>
                 </div>
                 
-                {/* Mode Toggle (Live/Snapshot) - Keep below or integrate nicely */}
                 <div className="flex justify-center pt-2">
                    <div className="inline-flex bg-slate-900 p-1 rounded-lg border border-slate-800">
                      <button onClick={() => setAnalysisMode('LIVE')} className={`px-4 py-1.5 text-xs font-mono rounded-md transition-all flex items-center gap-2 ${analysisMode === 'LIVE' ? 'bg-blue-900/40 text-blue-300 border border-blue-800/50' : 'text-slate-500 hover:text-slate-400'}`}>{t.modes.LIVE}</button>
@@ -661,14 +712,19 @@ const App: React.FC = () => {
                    </div>
                 </div>
 
-                {/* --- WATCHLIST SECTION --- */}
                 <div className="mt-8 pt-8 border-t border-slate-900">
                     <div className="flex justify-between items-center mb-4 px-2">
                         <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
                             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
                             {t.watchlist.title} ({t.markets[market]})
                         </h3>
-                        <div className="flex gap-2">
+                        <div className="flex gap-2 items-center">
+                            <input type="file" ref={cameraInputRef} accept="image/*" onChange={handleScreenshotImport} hidden />
+                            <button onClick={() => cameraInputRef.current?.click()} className="text-[10px] text-slate-600 hover:text-blue-400 transition-colors flex items-center gap-1">
+                                <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                                Screenshot Import
+                            </button>
+                            <span className="text-slate-800">|</span>
                             <input type="file" ref={importInputRef} accept=".json" onChange={handleImportPortfolio} hidden />
                             <button onClick={() => importInputRef.current?.click()} className="text-[10px] text-slate-600 hover:text-blue-400 transition-colors">{t.watchlist.import}</button>
                             <span className="text-slate-800">|</span>
@@ -678,19 +734,7 @@ const App: React.FC = () => {
                     
                     {currentMarketPortfolio.length > 0 ? (
                         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                             {currentMarketPortfolio.map(item => (
-                                 <div key={item.code} className="bg-slate-900 border border-slate-800 rounded-lg p-3 relative group hover:border-slate-700 transition-colors">
-                                     <div className="flex justify-between items-start">
-                                         <div onClick={() => runAnalysis([item.code])} className="cursor-pointer">
-                                             <div className="font-bold text-white font-mono">{item.code}</div>
-                                             {item.name && <div className="text-[10px] text-slate-500 truncate max-w-[80px]">{item.name}</div>}
-                                         </div>
-                                         <button onClick={() => toggleWatchlist(item.code)} className="text-slate-600 hover:text-rose-400">
-                                             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
-                                         </button>
-                                     </div>
-                                 </div>
-                             ))}
+                             {renderPortfolioItems()}
                              <div className="col-span-2 md:col-span-4 mt-2 text-center">
                                  <button onClick={handleAnalyzePortfolio} className="w-full py-2 bg-slate-900/50 hover:bg-blue-900/20 text-blue-400 border border-blue-900/30 border-dashed rounded-lg text-sm font-medium transition-colors">
                                     {t.watchlist.analyzeAll} ({currentMarketPortfolio.length})
@@ -708,10 +752,8 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* --- 2. LOADING STATE --- */}
         {isLoading && (
           <div className="mt-8">
-            {/* Show custom text if available (e.g. Discovery mode), otherwise standard loader */}
             {loadingText ? (
                 <div className="max-w-2xl mx-auto bg-slate-950 border border-purple-500/30 rounded-lg p-8 text-center animate-pulse">
                      <div className="w-12 h-12 bg-purple-500/20 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -726,7 +768,6 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* --- 3. ERROR STATE --- */}
         {error && (
           <div className="mt-8 max-w-2xl mx-auto p-6 bg-rose-950/30 border border-rose-900/50 rounded-xl text-center">
              <div className="text-rose-500 text-lg font-semibold mb-2">{t.errorTitle}</div>
@@ -740,10 +781,8 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* --- 4. BATCH LIST VIEW (Full Width) --- */}
         {viewState === 'BATCH_LIST' && batchCache && batchCache.batchData && (
           <div className="animate-fade-in-up mt-4">
-             {/* Batch Header */}
              <div className="flex justify-between items-center mb-6 bg-slate-900/50 p-6 rounded-2xl border border-slate-800">
                  <div>
                     <h2 className="text-2xl font-bold text-white flex items-center gap-3">
@@ -759,7 +798,6 @@ const App: React.FC = () => {
                  </button>
              </div>
 
-             {/* Batch Table */}
              <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-2xl">
                  <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse">
@@ -769,7 +807,8 @@ const App: React.FC = () => {
                                 <th className="p-5 tracking-wider">Symbol</th>
                                 <th className="p-5 tracking-wider">Price Info</th>
                                 <th className="p-5 tracking-wider">AI Signal</th>
-                                <th className="p-5 tracking-wider w-1/3">Key Logic</th>
+                                <th className="p-5 tracking-wider">Thresholds</th>
+                                <th className="p-5 tracking-wider">Next Day Action</th>
                                 <th className="p-5 text-right tracking-wider">Analysis</th>
                             </tr>
                         </thead>
@@ -792,6 +831,11 @@ const App: React.FC = () => {
                                     <td className="p-5">
                                         <div className="font-mono text-lg text-slate-200">{item.price}</div>
                                         <div className={`text-xs font-bold font-mono ${item.change.includes('-') ? 'text-rose-400' : 'text-emerald-400'}`}>{item.change}</div>
+                                        {item.lastUpdated && (
+                                            <div className="text-[10px] text-slate-500 mt-1 flex items-center gap-1">
+                                                <span>🕒</span> {item.lastUpdated}
+                                            </div>
+                                        )}
                                     </td>
                                     <td className="p-5">
                                         <span className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border flex items-center gap-2 w-fit ${getBatchSignalColor(item.signal)}`}>
@@ -800,14 +844,30 @@ const App: React.FC = () => {
                                         </span>
                                     </td>
                                     <td className="p-5">
-                                        <p className="text-sm text-slate-400 leading-relaxed">{item.reason}</p>
+                                        <div className="flex flex-col gap-1 text-xs font-mono">
+                                            {item.targetPrice ? (
+                                                <div className="flex items-center gap-1 text-emerald-400" title="Target Price">
+                                                    <span>🎯</span> {item.targetPrice}
+                                                </div>
+                                            ) : <span className="text-slate-600">-</span>}
+                                            {item.stopLoss ? (
+                                                <div className="flex items-center gap-1 text-rose-400" title="Stop Loss">
+                                                    <span>🛡️</span> {item.stopLoss}
+                                                </div>
+                                            ) : <span className="text-slate-600">-</span>}
+                                        </div>
+                                    </td>
+                                    <td className="p-5">
+                                        <div className="text-sm font-medium text-blue-200 leading-snug max-w-[200px]">
+                                            {item.action || item.reason}
+                                        </div>
                                     </td>
                                     <td className="p-5 text-right">
                                         <button 
                                             onClick={() => handleDeepDive(item.code)}
                                             className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-bold shadow-lg shadow-blue-900/20 hover:shadow-blue-500/20 transition-all transform hover:-translate-y-0.5 active:translate-y-0"
                                         >
-                                            Deep Dive &rarr;
+                                            Details &rarr;
                                         </button>
                                     </td>
                                 </tr>
@@ -819,13 +879,10 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* --- 5. SINGLE REPORT VIEW (Split Layout) --- */}
         {viewState === 'SINGLE_REPORT' && (
           <div className="animate-fade-in-up mt-4">
-             {/* Toolbar */}
              <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4 no-print">
                 <div className="flex items-center gap-4">
-                  {/* Logic: If we have batchCache, back button goes to batch list. Else, it acts as "New" */}
                   {batchCache ? (
                       <button 
                         onClick={handleBackToBatch}
@@ -853,7 +910,6 @@ const App: React.FC = () => {
                     {analysisMode === 'LIVE' ? 'LIVE MODE' : 'SNAPSHOT MODE'}
                   </span>
                   
-                  {/* Streaming Indicator */}
                   {!singleResult && (
                       <span className="flex items-center gap-2 text-[10px] text-emerald-400 font-mono animate-pulse">
                           <span className="w-2 h-2 rounded-full bg-emerald-400"></span>
@@ -864,7 +920,6 @@ const App: React.FC = () => {
                 
                 {singleResult && (
                   <div className="flex items-center gap-2">
-                     {/* Save to Portfolio Button */}
                      <button 
                        onClick={() => toggleWatchlist(singleResult.symbol)}
                        className={`px-3 py-1.5 rounded-lg text-xs font-medium border transition-colors flex items-center gap-2 ${
@@ -877,6 +932,17 @@ const App: React.FC = () => {
                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
                        </svg>
                        {isSaved(singleResult.symbol) ? (language === 'en' ? 'Saved' : '已收藏') : (language === 'en' ? 'Save' : '收藏')}
+                     </button>
+                     <button 
+                         onClick={() => {
+                             if(singleResult.structuredData) {
+                                 // Simple auto-add to portfolio logic if needed
+                                 if(!isSaved(singleResult.symbol)) toggleWatchlist(singleResult.symbol);
+                             }
+                         }}
+                         className="px-3 py-1.5 rounded-lg text-xs font-medium border border-blue-900/50 bg-blue-900/20 text-blue-300 hover:bg-blue-900/30 transition-colors flex items-center gap-2"
+                     >
+                        <span>📥</span> Save to Portfolio
                      </button>
 
                      <button 
@@ -902,10 +968,8 @@ const App: React.FC = () => {
              </div>
 
              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-                {/* Main Content Area (Report + Chat) */}
                 <div id="printable-report" className="lg:col-span-8 flex flex-col gap-6">
                    
-                   {/* Main Analysis Card */}
                    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 md:p-8 shadow-2xl relative overflow-hidden">
                       <div className="absolute top-0 right-0 p-4 opacity-10 pointer-events-none no-print">
                           <svg className="w-32 h-32 text-blue-500" fill="currentColor" viewBox="0 0 24 24">
@@ -917,21 +981,10 @@ const App: React.FC = () => {
                               <span>{market} | {singleResult ? singleResult.timestamp : 'Streaming...'}</span>
                               {!singleResult && <span className="animate-spin">⟳</span>}
                           </div>
-                          {/* Watchlist Toggle for Single View - Kept for card context */}
-                          {singleResult && (
-                             <button 
-                                onClick={() => toggleWatchlist(singleResult.symbol)}
-                                className={`flex items-center gap-1.5 px-2 py-1 rounded-full border transition-colors ${isSaved(singleResult.symbol) ? 'bg-yellow-900/20 text-yellow-400 border-yellow-900/50' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-white'}`}
-                             >
-                                <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
-                                {isSaved(singleResult.symbol) ? t.watchlist.removed : t.watchlist.added}
-                             </button>
-                          )}
                       </div>
                       <MarkdownRenderer content={displayContent} />
                    </div>
 
-                   {/* Chat History */}
                    {chatHistory.map((msg, index) => (
                      <div 
                        key={index} 
@@ -957,7 +1010,6 @@ const App: React.FC = () => {
                    
                    <div ref={messagesEndRef} />
 
-                   {/* Follow-up Loading - only if initializing connection, not during stream */}
                    {isFollowUpLoading && chatHistory[chatHistory.length-1]?.role !== 'model' && (
                      <div className="flex items-center gap-3 text-slate-500 p-4 animate-pulse">
                         <div className="w-2 h-2 bg-slate-500 rounded-full animate-bounce"></div>
@@ -967,7 +1019,6 @@ const App: React.FC = () => {
                      </div>
                    )}
                    
-                   {/* Tactical Command Input - Hidden when printing, only active after result */}
                    {singleResult && (
                      <div className="no-print sticky bottom-6 z-40">
                        <div className="bg-slate-900/90 backdrop-blur-md border border-slate-700 p-4 rounded-xl shadow-2xl">
@@ -976,7 +1027,6 @@ const App: React.FC = () => {
                               <label className="text-xs font-bold text-blue-400 uppercase tracking-wider">{t.followUpTitle}</label>
                             </div>
                             
-                            {/* Quick Actions */}
                             <div className="flex flex-wrap gap-2">
                               <button onClick={() => handleFollowUpSubmit(undefined, t.quickActions.entry)} className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-blue-900/40 hover:text-blue-300 border border-slate-700 rounded-md transition-colors">{t.quickActions.entry}</button>
                               <button onClick={() => handleFollowUpSubmit(undefined, t.quickActions.stop)} className="px-2.5 py-1 text-xs bg-slate-800 hover:bg-rose-900/40 hover:text-rose-300 border border-slate-700 rounded-md transition-colors">{t.quickActions.stop}</button>
@@ -1006,14 +1056,11 @@ const App: React.FC = () => {
                    )}
                 </div>
 
-                {/* Sidebar - Quant Tools, Strategy Key & Sources - VISIBLE IN SINGLE REPORT VIEW */}
                 <div className="lg:col-span-4 space-y-6 no-print">
                   
-                  {/* QUANT TOOLS INJECTION - Only show when structured data is ready */}
                   {singleResult?.structuredData ? (
                       <QuantTools data={singleResult.structuredData} lang={language} />
                   ) : (
-                      /* Skeleton / Placeholder for tools while streaming */
                       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 opacity-50 animate-pulse">
                           <div className="h-4 bg-slate-800 rounded w-1/3 mb-4"></div>
                           <div className="h-32 bg-slate-800 rounded mb-4"></div>
@@ -1021,7 +1068,6 @@ const App: React.FC = () => {
                       </div>
                   )}
 
-                  {/* Strategy Key */}
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
                       <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">{t.strategyKey}</h3>
                       <div className="space-y-3">
@@ -1056,7 +1102,6 @@ const App: React.FC = () => {
                       </div>
                   </div>
 
-                  {/* Sources */}
                   <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
                       <h3 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-4">{t.sources}</h3>
                       <div className="space-y-2">
@@ -1080,7 +1125,6 @@ const App: React.FC = () => {
                       </div>
                   </div>
                   
-                  {/* Disclaimer */}
                   <div className="p-4 rounded-xl bg-slate-800/30 border border-slate-800">
                     <p className="text-[10px] text-slate-500 leading-relaxed text-justify">
                       {t.disclaimer}
