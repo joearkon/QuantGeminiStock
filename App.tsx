@@ -1,6 +1,7 @@
+
 import React, { useState, useRef, useEffect } from 'react';
-import { startStockChat, startBatchAnalysis, sendFollowUpMessage, discoverStocksByTheme } from './services/geminiService';
-import { AnalysisResult, Language, Market, ChatMessage, AnalysisMode, BatchItem, PortfolioItem } from './types';
+import { startStockChat, startBatchAnalysis, sendFollowUpMessage, discoverStocksByTheme, parsePortfolioScreenshot, reanalyzeStockWithUserPrice, fetchMarketOverview, fetchDeepMacroAnalysis } from './services/geminiService';
+import { AnalysisResult, Language, Market, ChatMessage, AnalysisMode, BatchItem, PortfolioItem, MarketOverview, DeepMacroAnalysis } from './types';
 import { TerminalLoader } from './components/TerminalLoader';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { QuantTools } from './components/QuantTools';
@@ -8,10 +9,7 @@ import { Chat } from '@google/genai';
 
 const TRANSLATIONS = {
   en: {
-    subtitle: "Global Quant Analysis v2.5",
-    heroTitlePrefix: "AI-Powered",
-    heroTitleHighlight: "Quant Strategy",
-    heroDesc: "Select a market and enter stock code(s). For batch analysis, separate codes with spaces or commas (e.g. 'AAPL MSFT'). Our engine generates professional trading guidance.",
+    subtitle: "Global Quant v2.6",
     analyzeBtn: "Analyze",
     newAnalysis: "New Analysis",
     sources: "Live Data Sources",
@@ -76,13 +74,21 @@ const TRANSLATIONS = {
       export: "Export JSON",
       added: "Added to Watchlist",
       removed: "Removed from Watchlist"
+    },
+    marketDashboard: {
+        loading: "Scanning Macro Data...",
+        sentiment: "Sentiment",
+        rotation: "Smart Money Flow",
+        hot: "Hot Sectors",
+        strategy: "Monthly Strategy",
+        generateReport: "📊 Generate Strategy Report",
+        deepDive: "Deep Sector Analysis",
+        analyzeDeep: "🔍 Analyze Opportunities",
+        deepLoading: "Calculating Sector Rotation..."
     }
   },
   zh: {
-    subtitle: "全球量化分析系统 v2.5",
-    heroTitlePrefix: "AI驱动",
-    heroTitleHighlight: "量化交易策略",
-    heroDesc: "选择市场并输入股票代码。支持批量分析（用空格或逗号分隔，如 '600519 000001'）。AI 引擎将为您提供专业的交易指导和风控策略。",
+    subtitle: "全球量化系统 v2.6",
     analyzeBtn: "开始分析",
     newAnalysis: "重新分析",
     sources: "实时数据源",
@@ -147,6 +153,17 @@ const TRANSLATIONS = {
       export: "导出 JSON",
       added: "已加入自选",
       removed: "已移出自选"
+    },
+    marketDashboard: {
+        loading: "正在扫描全市场宏观数据...",
+        sentiment: "市场情绪",
+        rotation: "深度资金轮动",
+        hot: "风口题材",
+        strategy: "月度策略",
+        generateReport: "📊 生成本月投资指南",
+        deepDive: "深度赛道推演 (Deep Dive)",
+        analyzeDeep: "🔍 挖掘核心赛道",
+        deepLoading: "正在推演风格切换逻辑..."
     }
   }
 };
@@ -170,6 +187,14 @@ const App: React.FC = () => {
   const [loadingText, setLoadingText] = useState<string>(''); // Custom loading text
   const [streamingAnalysisText, setStreamingAnalysisText] = useState<string>('');
   const [error, setError] = useState<string | null>(null);
+  
+  // Market Pulse State
+  const [marketPulse, setMarketPulse] = useState<MarketOverview | null>(null);
+  const [isPulseLoading, setIsPulseLoading] = useState(false);
+  
+  // Deep Macro State
+  const [deepAnalysis, setDeepAnalysis] = useState<DeepMacroAnalysis | null>(null);
+  const [isDeepAnalyzing, setIsDeepAnalyzing] = useState(false);
 
   // Portfolio State
   const [portfolio, setPortfolio] = useState<PortfolioItem[]>(() => {
@@ -177,6 +202,7 @@ const App: React.FC = () => {
       const saved = localStorage.getItem('quant_portfolio');
       return saved ? JSON.parse(saved) : [];
     } catch (e) {
+      localStorage.removeItem('quant_portfolio');
       return [];
     }
   });
@@ -189,6 +215,11 @@ const App: React.FC = () => {
   // Separate results for Batch and Single to support navigation
   const [singleResult, setSingleResult] = useState<AnalysisResult | null>(null);
   const [batchCache, setBatchCache] = useState<AnalysisResult | null>(null); // Store batch data here
+  
+  // Batch Editing States
+  const [editingRow, setEditingRow] = useState<string | null>(null);
+  const [editPrice, setEditPrice] = useState<string>('');
+  const [reanalyzingRows, setReanalyzingRows] = useState<Set<string>>(new Set());
 
   // Chat Session State
   const chatSessionRef = useRef<Chat | null>(null);
@@ -206,10 +237,61 @@ const App: React.FC = () => {
     localStorage.setItem('quant_portfolio', JSON.stringify(portfolio));
   }, [portfolio]);
 
+  // Load Market Pulse on Mount (Once per session or on refresh)
+  useEffect(() => {
+     if (viewState === 'HOME') {
+         // Always reload pulse when coming home or switching market
+         setMarketPulse(null); // Clear old data to prevent confusion
+         setDeepAnalysis(null); // Clear deep analysis
+         loadMarketPulse();
+     }
+  }, [viewState, market]);
+
+  const loadMarketPulse = async () => {
+      setIsPulseLoading(true);
+      try {
+          const data = await fetchMarketOverview(market, language);
+          setMarketPulse(data);
+      } catch (e) {
+          console.warn("Market Pulse failed", e);
+      } finally {
+          setIsPulseLoading(false);
+      }
+  };
+
+  const handleDeepMacroAnalysis = async () => {
+      setIsDeepAnalyzing(true);
+      try {
+          const data = await fetchDeepMacroAnalysis(market, language);
+          setDeepAnalysis(data);
+      } catch (e) {
+          console.error("Deep macro failed", e);
+      } finally {
+          setIsDeepAnalyzing(false);
+      }
+  };
+
   // Scroll to bottom when chat history updates
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory, streamingAnalysisText]);
+
+  // Helper: Color logic for trends based on Market
+  // A-Share: Red=Up, Green=Down. Global: Green=Up, Red=Down.
+  const getTrendColor = (changeStr: string, isText: boolean = true) => {
+      const isNegative = changeStr.includes('-');
+      const isPositive = !isNegative && (changeStr.includes('+') || parseFloat(changeStr) > 0);
+      
+      if (market === 'A_SHARE') {
+          // Chinese Style
+          if (isNegative) return isText ? 'text-emerald-400' : 'bg-emerald-500';
+          return isText ? 'text-rose-400' : 'bg-rose-500';
+      } else {
+          // Global Style
+          if (isNegative) return isText ? 'text-rose-400' : 'bg-rose-500';
+          return isText ? 'text-emerald-400' : 'bg-emerald-500';
+      }
+  };
 
   // Handle Image Upload
   const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -221,6 +303,54 @@ const App: React.FC = () => {
       };
       reader.readAsDataURL(file);
     }
+  };
+  
+  // Handle Screenshot Portfolio Import
+  const handleScreenshotImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+          const base64 = reader.result as string;
+          setIsLoading(true);
+          setLoadingText(language === 'en' ? "Scanning Portfolio Screenshot..." : "正在识别持仓截图...");
+          try {
+              const items = await parsePortfolioScreenshot(base64, market, language);
+              if (items.length > 0) {
+                  // Merge into portfolio
+                  setPortfolio(prev => {
+                      const combined = [...prev];
+                      items.forEach(newItem => {
+                          const idx = combined.findIndex(p => p.code === newItem.code);
+                          if (idx !== -1) {
+                              // Update existing
+                              combined[idx] = { ...combined[idx], quantity: newItem.quantity, avgCost: newItem.avgCost };
+                          } else {
+                              // Add new
+                              combined.push({
+                                  code: newItem.code,
+                                  name: newItem.name,
+                                  market,
+                                  addedAt: Date.now(),
+                                  quantity: newItem.quantity,
+                                  avgCost: newItem.avgCost
+                              });
+                          }
+                      });
+                      return combined;
+                  });
+              } else {
+                  setError(language === 'en' ? "No holdings found in image. Please ensure code/name is visible." : "未识别到有效持仓。请确保截图清晰包含股票名称或代码。");
+              }
+          } catch (err) {
+              setError("Failed to parse screenshot.");
+          } finally {
+              setIsLoading(false);
+              if (fileInputRef.current) fileInputRef.current.value = '';
+          }
+      };
+      reader.readAsDataURL(file);
   };
 
   const clearImage = () => {
@@ -238,6 +368,10 @@ const App: React.FC = () => {
         return [...prev, { code, market, addedAt: Date.now(), name }];
       }
     });
+  };
+
+  const updatePortfolioItem = (code: string, field: 'quantity' | 'avgCost', value: number) => {
+      setPortfolio(prev => prev.map(p => p.code === code ? { ...p, [field]: value } : p));
   };
 
   const isSaved = (code: string) => {
@@ -358,6 +492,20 @@ const App: React.FC = () => {
     }
   };
 
+  // Generate Strategy Report
+  const handleGenerateStrategyReport = async () => {
+      const monthName = new Date().toLocaleString(language === 'en' ? 'en-US' : 'zh-CN', { month: 'long' });
+      const query = language === 'en' 
+        ? `${monthName} Investment Strategy and Sector Rotation for ${market}` 
+        : `${monthName} ${market} 投资策略与板块轮动报告`;
+      
+      setSearchMode('DISCOVERY');
+      setStockCode(query); // Set text for context
+      
+      // Treat as Single Analysis mode for a report
+      await runAnalysis([query], false);
+  };
+
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!stockCode.trim() && !selectedImage) return;
@@ -376,7 +524,9 @@ const App: React.FC = () => {
         try {
             const discoveredCodes = await discoverStocksByTheme(stockCode, market, language);
             if (discoveredCodes.length === 0) {
-                throw new Error("No stocks found for this theme.");
+                // If discovery returns empty (maybe it was a general question), fallback to single chat
+                 await runAnalysis([stockCode], false);
+                 return;
             }
             // Auto-trigger batch analysis with discovered codes
             await runAnalysis(discoveredCodes, false);
@@ -387,7 +537,8 @@ const App: React.FC = () => {
     } else {
         // --- STANDARD CODE FLOW ---
         // Split by comma (English and Chinese) or space
-        const codes = stockCode.split(/[\s,\uff0c]+/).filter(c => c.trim().length > 0);
+        const splitRegex = new RegExp('[\\s,\uff0c]+');
+        const codes = stockCode.split(splitRegex).filter(c => c.trim().length > 0);
         if (codes.length === 0) return;
         await runAnalysis(codes, false);
     }
@@ -405,6 +556,44 @@ const App: React.FC = () => {
       setStreamingAnalysisText('');
       setChatHistory([]);
       setViewState('BATCH_LIST');
+  };
+
+  // Inline Batch Editing
+  const startEditPrice = (code: string, currentPrice: string) => {
+      setEditingRow(code);
+      setEditPrice(String(currentPrice)); // Ensure string
+  };
+  
+  const cancelEditPrice = () => {
+      setEditingRow(null);
+      setEditPrice('');
+  };
+
+  const saveEditPrice = async (code: string, name: string) => {
+      if (!editPrice) return;
+      
+      setEditingRow(null);
+      setReanalyzingRows(prev => new Set(prev).add(code));
+      
+      try {
+          // Re-analyze specific row
+          const updatedItem = await reanalyzeStockWithUserPrice(code, name, editPrice, market, language);
+          
+          // Update Cache
+          setBatchCache(prev => {
+              if (!prev || !prev.batchData) return prev;
+              const newData = prev.batchData.map(item => item.code === code ? updatedItem : item);
+              return { ...prev, batchData: newData };
+          });
+      } catch (e) {
+          alert("Re-analysis failed.");
+      } finally {
+          setReanalyzingRows(prev => {
+              const next = new Set(prev);
+              next.delete(code);
+              return next;
+          });
+      }
   };
 
   const handleFollowUpSubmit = async (e?: React.FormEvent, customText?: string) => {
@@ -521,51 +710,19 @@ const App: React.FC = () => {
             <div className="w-8 h-8 rounded bg-gradient-to-br from-blue-600 to-indigo-600 flex items-center justify-center font-bold text-white shadow-lg shadow-blue-500/20">
               Q
             </div>
-            <h1 className="text-xl font-bold tracking-tight text-white">
+            <h1 className="text-xl font-bold tracking-tight text-white hidden sm:block">
               Quant<span className="text-blue-500">Gemini</span>
             </h1>
           </div>
           
           <div className="flex items-center gap-4">
-             <button 
-               onClick={toggleLanguage}
-               className="px-3 py-1 rounded-full border border-slate-700 text-xs font-mono text-slate-400 hover:text-white hover:border-slate-500 transition-all"
-             >
-               {language === 'en' ? 'CN / EN' : '中 / 英'}
-             </button>
-             <div className="text-xs font-mono text-slate-500 hidden sm:block">
-               {t.subtitle}
-             </div>
-          </div>
-        </div>
-      </header>
-
-      {/* Main Container - Width adjusts based on view */}
-      <main className={`mx-auto px-4 py-8 ${viewState === 'BATCH_LIST' ? 'max-w-7xl' : 'max-w-6xl'}`}>
-        
-        {/* --- 1. HERO & INPUT (Visible only on HOME) --- */}
-        {viewState === 'HOME' && !isLoading && (
-          <div className="animate-fade-in-up mt-12">
-            <div className="text-center mb-10">
-              <h2 className="text-4xl md:text-5xl font-bold text-white mb-4 tracking-tight">
-                {t.heroTitlePrefix} <br className="md:hidden" />
-                <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">
-                  {t.heroTitleHighlight}
-                </span>
-              </h2>
-              <p className="text-slate-400 text-lg max-w-2xl mx-auto leading-relaxed">
-                {t.heroDesc}
-              </p>
-            </div>
-
-            <div className="max-w-xl mx-auto space-y-4">
-                {/* Market Selector */}
-                <div className="flex bg-slate-900 p-1 rounded-xl border border-slate-800">
+             {/* Simple Market Toggles in Header for Quick Access */}
+             <div className="hidden md:flex bg-slate-900 rounded-lg p-1 border border-slate-800">
                   {(['A_SHARE', 'US_STOCK', 'HK_STOCK'] as Market[]).map((m) => (
                     <button
                       key={m}
                       onClick={() => setMarket(m)}
-                      className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${
+                      className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
                         market === m 
                           ? 'bg-slate-800 text-white shadow-sm' 
                           : 'text-slate-500 hover:text-slate-300'
@@ -574,37 +731,265 @@ const App: React.FC = () => {
                       {t.markets[m]}
                     </button>
                   ))}
-                </div>
+             </div>
 
-                {/* Search Mode Tabs */}
-                <div className="flex justify-between items-end px-2">
-                    <div className="flex gap-4">
-                        <button 
-                            onClick={() => setSearchMode('CODE')}
-                            className={`text-sm font-bold pb-2 border-b-2 transition-colors ${searchMode === 'CODE' ? 'text-white border-blue-500' : 'text-slate-500 border-transparent hover:text-slate-300'}`}
-                        >
-                            {t.searchTabs.code}
-                        </button>
-                        <button 
-                            onClick={() => setSearchMode('DISCOVERY')}
-                            className={`text-sm font-bold pb-2 border-b-2 transition-colors ${searchMode === 'DISCOVERY' ? 'text-white border-purple-500' : 'text-slate-500 border-transparent hover:text-slate-300'}`}
-                        >
-                            {t.searchTabs.discovery}
-                        </button>
+             <button 
+               onClick={toggleLanguage}
+               className="px-3 py-1 rounded-full border border-slate-700 text-xs font-mono text-slate-400 hover:text-white hover:border-slate-500 transition-all"
+             >
+               {language === 'en' ? 'CN / EN' : '中 / 英'}
+             </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Container */}
+      <main className={`mx-auto px-4 py-8 ${viewState === 'BATCH_LIST' ? 'max-w-7xl' : 'max-w-6xl'}`}>
+        
+        {/* --- 1. HERO / DASHBOARD (Visible only on HOME) --- */}
+        {viewState === 'HOME' && !isLoading && (
+          <div className="animate-fade-in-up mt-2">
+            
+            {/* 1A. Mobile Market Selector (if needed) */}
+            <div className="md:hidden flex bg-slate-900 p-1 rounded-xl border border-slate-800 mb-6">
+                {(['A_SHARE', 'US_STOCK', 'HK_STOCK'] as Market[]).map((m) => (
+                <button
+                    key={m}
+                    onClick={() => setMarket(m)}
+                    className={`flex-1 py-2 text-sm font-medium rounded-lg transition-all ${
+                    market === m 
+                        ? 'bg-slate-800 text-white shadow-sm' 
+                        : 'text-slate-500 hover:text-slate-300'
+                    }`}
+                >
+                    {t.markets[m]}
+                </button>
+                ))}
+            </div>
+
+            {/* 1B. COMMAND CENTER DASHBOARD */}
+            <div className="max-w-5xl mx-auto mb-10">
+                {isPulseLoading ? (
+                    <div className="flex justify-center items-center py-20 bg-slate-900/20 rounded-2xl border border-slate-800/50">
+                        <span className="animate-pulse text-slate-500 font-mono text-sm">{t.marketDashboard.loading}</span>
                     </div>
+                ) : marketPulse ? (
+                    <div className="space-y-4">
+                        {/* Indices Ticker */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                             {marketPulse.indices?.map((idx, i) => (
+                                 <div key={i} className="bg-slate-900/80 border border-slate-800 p-4 rounded-xl flex justify-between items-center hover:bg-slate-800 transition-colors">
+                                     <div className="font-bold text-slate-400 text-xs uppercase">{idx.name}</div>
+                                     <div className="text-right">
+                                         <div className="text-white font-mono font-bold text-lg">{idx.value}</div>
+                                         <div className={`text-xs font-mono ${getTrendColor(idx.change)}`}>{idx.change}</div>
+                                     </div>
+                                 </div>
+                             ))}
+                        </div>
+
+                        {/* Macro Grid */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                            {/* Sentiment */}
+                            <div className="bg-slate-900/50 border border-slate-800 p-5 rounded-2xl">
+                                <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">{t.marketDashboard.sentiment}</h4>
+                                <div className="flex items-baseline gap-2 mb-2">
+                                    <span className={`text-4xl font-bold ${marketPulse.sentimentScore > 75 ? 'text-rose-400' : marketPulse.sentimentScore < 25 ? 'text-emerald-400' : 'text-yellow-400'}`}>
+                                        {marketPulse.sentimentScore}
+                                    </span>
+                                </div>
+                                <div className="text-sm text-white font-medium">{marketPulse.sentimentText}</div>
+                                <div className="w-full h-1 bg-slate-800 rounded-full mt-3 overflow-hidden">
+                                    <div 
+                                        className={`h-full rounded-full ${marketPulse.sentimentScore > 75 ? 'bg-rose-500' : marketPulse.sentimentScore < 25 ? 'bg-emerald-500' : 'bg-yellow-500'}`} 
+                                        style={{width: `${marketPulse.sentimentScore}%`}}
+                                    ></div>
+                                </div>
+                            </div>
+                            
+                            {/* Rotation Logic */}
+                            <div className="bg-slate-900/50 border border-slate-800 p-5 rounded-2xl flex flex-col">
+                                <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">{t.marketDashboard.rotation}</h4>
+                                <div className="space-y-3 flex-1">
+                                    {typeof marketPulse.rotationAnalysis === 'object' ? (
+                                        <>
+                                            <div className="text-xs flex justify-between border-b border-slate-800 pb-2">
+                                                <span className="text-slate-500">INFLOW</span>
+                                                <span className="text-emerald-400 font-bold text-right">{marketPulse.rotationAnalysis.inflow}</span>
+                                            </div>
+                                            <div className="text-xs flex justify-between border-b border-slate-800 pb-2">
+                                                <span className="text-slate-500">OUTFLOW</span>
+                                                <span className="text-rose-400 font-bold text-right">{marketPulse.rotationAnalysis.outflow}</span>
+                                            </div>
+                                            <div className="pt-1">
+                                                <p className="text-[10px] text-blue-200 leading-relaxed italic">
+                                                    Logic: {marketPulse.rotationAnalysis.logic}
+                                                </p>
+                                            </div>
+                                        </>
+                                    ) : (
+                                        <p className="text-sm text-blue-200">{marketPulse.rotationAnalysis}</p>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Hot Sectors & Strategy */}
+                            <div className="bg-slate-900/50 border border-slate-800 p-5 rounded-2xl flex flex-col justify-between">
+                                <div>
+                                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">{t.marketDashboard.hot}</h4>
+                                    <div className="flex flex-wrap gap-2 mb-4">
+                                        {marketPulse.hotSectors.map((sec, i) => (
+                                            <span key={i} className="px-2 py-1 bg-slate-800 text-slate-300 text-[10px] rounded border border-slate-700">
+                                                {sec}
+                                            </span>
+                                        ))}
+                                    </div>
+                                    <p className="text-xs text-slate-400 line-clamp-2">{marketPulse.monthlyStrategy}</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                ) : null}
+            </div>
+
+            {/* 1C. DEEP DIVE SECTION (New) */}
+            <div className="max-w-5xl mx-auto mb-10">
+                <div className="bg-slate-950 border border-slate-800 rounded-2xl overflow-hidden">
+                    <div className="p-4 border-b border-slate-800 bg-slate-900/30 flex justify-between items-center">
+                        <div className="flex items-center gap-2">
+                            <span className="text-purple-400">⚡</span>
+                            <h3 className="font-bold text-sm text-slate-300 uppercase tracking-wider">{t.marketDashboard.deepDive}</h3>
+                        </div>
+                        {!deepAnalysis && (
+                            <button 
+                                onClick={handleDeepMacroAnalysis}
+                                disabled={isDeepAnalyzing}
+                                className="px-3 py-1.5 bg-purple-900/20 hover:bg-purple-900/40 text-purple-300 text-xs font-bold rounded border border-purple-900/50 transition-colors disabled:opacity-50"
+                            >
+                                {isDeepAnalyzing ? t.marketDashboard.deepLoading : t.marketDashboard.analyzeDeep}
+                            </button>
+                        )}
+                    </div>
+                    
+                    {deepAnalysis && (
+                        <div className="p-6 animate-fade-in">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-6">
+                                {/* Left: Main Board/Value */}
+                                <div className={`p-4 rounded-xl border ${deepAnalysis.strategy === 'SWITCH_TO_MAIN' || deepAnalysis.strategy === 'DEFENSIVE' ? 'bg-blue-900/20 border-blue-500/50' : 'bg-slate-900/50 border-slate-800'}`}>
+                                    <h4 className="text-sm font-bold text-blue-400 mb-2">Main Board / Defensive</h4>
+                                    <div className="text-xs text-slate-400 mb-2 font-mono uppercase">Opportunity</div>
+                                    <div className="text-sm text-white font-medium mb-3">{deepAnalysis.mainBoard.opportunity}</div>
+                                    <div className="text-xs text-slate-400 mb-2 font-mono uppercase">Logic</div>
+                                    <p className="text-xs text-slate-300 leading-relaxed mb-4">{deepAnalysis.mainBoard.logic}</p>
+                                    <div className="flex flex-wrap gap-2">
+                                        {deepAnalysis.mainBoard.recommendedSectors.map((s, i) => (
+                                            <span key={i} className="text-[10px] px-2 py-0.5 bg-blue-950 text-blue-300 rounded border border-blue-900">{s}</span>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                {/* Right: Tech/Growth */}
+                                <div className={`p-4 rounded-xl border ${deepAnalysis.strategy === 'SWITCH_TO_TECH' ? 'bg-purple-900/20 border-purple-500/50' : 'bg-slate-900/50 border-slate-800'}`}>
+                                    <h4 className="text-sm font-bold text-purple-400 mb-2">Tech / Growth</h4>
+                                    <div className="text-xs text-slate-400 mb-2 font-mono uppercase">Opportunity</div>
+                                    <div className="text-sm text-white font-medium mb-3">{deepAnalysis.techGrowth.opportunity}</div>
+                                    <div className="text-xs text-slate-400 mb-2 font-mono uppercase">Logic</div>
+                                    <p className="text-xs text-slate-300 leading-relaxed mb-4">{deepAnalysis.techGrowth.logic}</p>
+                                    <div className="flex flex-wrap gap-2">
+                                        {deepAnalysis.techGrowth.recommendedSectors.map((s, i) => (
+                                            <span key={i} className="text-[10px] px-2 py-0.5 bg-purple-950 text-purple-300 rounded border border-purple-900">{s}</span>
+                                        ))}
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            {/* Verdict */}
+                            <div className="bg-slate-900 p-4 rounded-xl border-l-4 border-emerald-500">
+                                <div className="text-xs font-bold text-emerald-400 uppercase mb-1">Strategist Verdict</div>
+                                <p className="text-sm text-white">{deepAnalysis.summary}</p>
+                            </div>
+
+                            {/* Portfolio Allocation Model */}
+                            {deepAnalysis.suggestedAllocation && (
+                                <div className="mt-6 border-t border-slate-800 pt-6">
+                                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">{language === 'en' ? 'Suggested Allocation Model' : '建议仓位配置模型'}</h4>
+                                    
+                                    {/* Visual Bar */}
+                                    <div className="h-4 w-full rounded-full overflow-hidden flex mb-4">
+                                        {deepAnalysis.suggestedAllocation.map((bucket, i) => {
+                                            const colors = ['bg-purple-500', 'bg-blue-500', 'bg-slate-600'];
+                                            return (
+                                                <div 
+                                                    key={i} 
+                                                    style={{ width: `${bucket.percentage}%` }} 
+                                                    className={`${colors[i % colors.length]} h-full`}
+                                                    title={`${bucket.category}: ${bucket.percentage}%`}
+                                                />
+                                            );
+                                        })}
+                                    </div>
+
+                                    {/* Legend / Details */}
+                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                        {deepAnalysis.suggestedAllocation.map((bucket, i) => {
+                                            const textColors = ['text-purple-400', 'text-blue-400', 'text-slate-400'];
+                                            const borderColors = ['border-purple-900', 'border-blue-900', 'border-slate-800'];
+                                            return (
+                                                <div key={i} className={`p-3 rounded-lg border bg-slate-900/30 ${borderColors[i % borderColors.length]}`}>
+                                                    <div className="flex justify-between items-center mb-1">
+                                                        <span className={`text-xs font-bold ${textColors[i % textColors.length]}`}>{bucket.category}</span>
+                                                        <span className="text-sm font-mono font-bold text-white">{bucket.percentage}%</span>
+                                                    </div>
+                                                    <p className="text-[10px] text-slate-400 mb-2 h-8 overflow-hidden">{bucket.rationale}</p>
+                                                    <div className="flex flex-wrap gap-1">
+                                                        {bucket.examples.map((ex, j) => (
+                                                            <span key={j} className="text-[9px] px-1.5 py-0.5 bg-slate-800 rounded text-slate-300 border border-slate-700">{ex}</span>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    
+                    {isDeepAnalyzing && (
+                         <div className="p-10 text-center text-slate-500 text-sm font-mono animate-pulse">
+                             Scanning Market Style Factors...
+                         </div>
+                    )}
+                </div>
+            </div>
+
+            {/* 1D. SEARCH BAR & WATCHLIST (Lower Section) */}
+            <div className="max-w-2xl mx-auto space-y-6">
+                
+                {/* Search Tabs */}
+                <div className="flex justify-center gap-6 mb-2">
+                    <button 
+                        onClick={() => setSearchMode('CODE')}
+                        className={`text-sm font-bold pb-2 border-b-2 transition-colors ${searchMode === 'CODE' ? 'text-white border-blue-500' : 'text-slate-600 border-transparent hover:text-slate-400'}`}
+                    >
+                        {t.searchTabs.code}
+                    </button>
+                    <button 
+                        onClick={() => setSearchMode('DISCOVERY')}
+                        className={`text-sm font-bold pb-2 border-b-2 transition-colors ${searchMode === 'DISCOVERY' ? 'text-white border-purple-500' : 'text-slate-600 border-transparent hover:text-slate-400'}`}
+                    >
+                        {t.searchTabs.discovery}
+                    </button>
                 </div>
 
-                {/* Search Bar Container */}
-                <div className={`bg-slate-900/50 p-2 rounded-2xl border shadow-xl backdrop-blur-sm transition-all hover:shadow-2xl flex flex-col gap-2 ${searchMode === 'DISCOVERY' ? 'border-purple-500/30 hover:border-purple-500/50' : 'border-slate-800 hover:border-slate-700'}`}>
-                  
+                {/* Input Container */}
+                <div className={`bg-slate-900 p-2 rounded-2xl border shadow-lg transition-all flex flex-col gap-2 ${searchMode === 'DISCOVERY' ? 'border-purple-900/50' : 'border-slate-800'}`}>
                   {/* Image Preview */}
                   {selectedImage && (
-                      <div className="flex items-center gap-2 p-2 bg-slate-800 rounded-lg w-fit">
-                          <img src={selectedImage} alt="Preview" className="h-12 w-12 object-cover rounded border border-slate-700" />
-                          <div className="text-xs text-slate-300">Image attached</div>
-                          <button onClick={clearImage} className="ml-2 text-slate-500 hover:text-rose-400">
-                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
-                          </button>
+                      <div className="flex items-center gap-2 p-2 bg-slate-800 rounded-lg w-fit mx-2 mt-2">
+                          <img src={selectedImage} alt="Preview" className="h-10 w-10 object-cover rounded border border-slate-700" />
+                          <div className="text-[10px] text-slate-300">Image attached</div>
+                          <button onClick={clearImage} className="ml-2 text-slate-500 hover:text-rose-400">×</button>
                       </div>
                   )}
 
@@ -614,92 +999,72 @@ const App: React.FC = () => {
                       value={stockCode}
                       onChange={(e) => setStockCode(e.target.value)}
                       placeholder={searchMode === 'DISCOVERY' ? t.discoveryPlaceholders[market] : t.placeholders[market]}
-                      className="w-full bg-transparent text-white text-lg px-6 py-4 outline-none placeholder:text-slate-600 font-mono"
+                      className="w-full bg-transparent text-white text-base px-6 py-3 outline-none placeholder:text-slate-600 font-mono"
                     />
                     
-                    {/* Action Buttons Right */}
                     <div className="absolute right-2 flex items-center gap-2">
-                        {/* Image Upload Button */}
-                        <input 
-                            type="file" 
-                            accept="image/*" 
-                            ref={fileInputRef} 
-                            onChange={handleImageSelect} 
-                            hidden 
-                        />
-                        <button
-                            type="button"
-                            onClick={() => fileInputRef.current?.click()}
-                            title={t.uploadImage}
-                            className="p-2 text-slate-400 hover:text-blue-400 transition-colors rounded-lg hover:bg-slate-800"
-                        >
-                             <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                             </svg>
-                        </button>
+                        {/* Camera/Upload */}
+                        <div className="relative group">
+                            <input type="file" accept="image/*" ref={fileInputRef} onChange={handleImageSelect} hidden />
+                            <input type="file" accept="image/*" ref={importInputRef} onChange={handleScreenshotImport} hidden />
+                            <button
+                                type="button"
+                                onClick={() => fileInputRef.current?.click()}
+                                className="p-2 text-slate-500 hover:text-blue-400 transition-colors rounded-lg hover:bg-slate-800"
+                            >
+                                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                            </button>
+                        </div>
 
                         <button
-                        type="submit"
-                        disabled={(!stockCode.trim() && !selectedImage)}
-                        className={`text-white px-6 py-2.5 rounded-xl font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed shadow-lg ${
-                            searchMode === 'DISCOVERY' 
-                            ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-900/20'
-                            : 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/20'
-                        }`}
+                            type="submit"
+                            disabled={(!stockCode.trim() && !selectedImage)}
+                            className={`text-white px-5 py-2 rounded-lg text-sm font-bold transition-all shadow-lg ${
+                                searchMode === 'DISCOVERY' 
+                                ? 'bg-purple-600 hover:bg-purple-500 shadow-purple-900/20'
+                                : 'bg-blue-600 hover:bg-blue-500 shadow-blue-900/20'
+                            }`}
                         >
-                        {t.analyzeBtn}
+                            {t.analyzeBtn}
                         </button>
                     </div>
                   </form>
                 </div>
-                
-                {/* Mode Toggle (Live/Snapshot) - Keep below or integrate nicely */}
-                <div className="flex justify-center pt-2">
-                   <div className="inline-flex bg-slate-900 p-1 rounded-lg border border-slate-800">
-                     <button onClick={() => setAnalysisMode('LIVE')} className={`px-4 py-1.5 text-xs font-mono rounded-md transition-all flex items-center gap-2 ${analysisMode === 'LIVE' ? 'bg-blue-900/40 text-blue-300 border border-blue-800/50' : 'text-slate-500 hover:text-slate-400'}`}>{t.modes.LIVE}</button>
-                     <button onClick={() => setAnalysisMode('SNAPSHOT')} className={`px-4 py-1.5 text-xs font-mono rounded-md transition-all flex items-center gap-2 ${analysisMode === 'SNAPSHOT' ? 'bg-purple-900/40 text-purple-300 border border-purple-800/50' : 'text-slate-500 hover:text-slate-400'}`}>{t.modes.SNAPSHOT}</button>
-                   </div>
-                </div>
 
-                {/* --- WATCHLIST SECTION --- */}
-                <div className="mt-8 pt-8 border-t border-slate-900">
-                    <div className="flex justify-between items-center mb-4 px-2">
-                        <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
-                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z" /></svg>
-                            {t.watchlist.title} ({t.markets[market]})
+                {/* Watchlist */}
+                <div className="pt-6 border-t border-slate-800/50">
+                    <div className="flex justify-between items-center mb-4 px-1">
+                        <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+                            {t.watchlist.title}
                         </h3>
-                        <div className="flex gap-2">
-                            <input type="file" ref={importInputRef} accept=".json" onChange={handleImportPortfolio} hidden />
-                            <button onClick={() => importInputRef.current?.click()} className="text-[10px] text-slate-600 hover:text-blue-400 transition-colors">{t.watchlist.import}</button>
+                        <div className="flex gap-2 items-center text-[10px]">
+                            <button onClick={() => importInputRef.current?.click()} className="text-slate-600 hover:text-blue-400 transition-colors">OCR Import</button>
                             <span className="text-slate-800">|</span>
-                            <button onClick={handleExportPortfolio} className="text-[10px] text-slate-600 hover:text-blue-400 transition-colors">{t.watchlist.export}</button>
+                            <button onClick={handleExportPortfolio} className="text-slate-600 hover:text-blue-400 transition-colors">Backup</button>
                         </div>
                     </div>
                     
                     {currentMarketPortfolio.length > 0 ? (
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        <div className="grid grid-cols-2 gap-3">
                              {currentMarketPortfolio.map(item => (
-                                 <div key={item.code} className="bg-slate-900 border border-slate-800 rounded-lg p-3 relative group hover:border-slate-700 transition-colors">
-                                     <div className="flex justify-between items-start">
-                                         <div onClick={() => runAnalysis([item.code])} className="cursor-pointer">
-                                             <div className="font-bold text-white font-mono">{item.code}</div>
-                                             {item.name && <div className="text-[10px] text-slate-500 truncate max-w-[80px]">{item.name}</div>}
-                                         </div>
-                                         <button onClick={() => toggleWatchlist(item.code)} className="text-slate-600 hover:text-rose-400">
-                                             <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" /></svg>
-                                         </button>
+                                 <div key={item.code} className="bg-slate-900 border border-slate-800 rounded-lg p-3 hover:border-slate-700 transition-colors flex justify-between items-center group">
+                                     <div onClick={() => runAnalysis([item.code])} className="cursor-pointer">
+                                         <div className="font-bold text-white text-sm font-mono">{item.code}</div>
+                                         {item.name && <div className="text-[10px] text-slate-500 truncate w-20">{item.name}</div>}
+                                     </div>
+                                     <div className="text-right">
+                                         {item.quantity && item.avgCost ? (
+                                             <div className="text-[10px] text-slate-400 font-mono">¥{(item.quantity * item.avgCost).toLocaleString()}</div>
+                                         ) : (
+                                             <button onClick={() => toggleWatchlist(item.code)} className="text-slate-600 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity">×</button>
+                                         )}
                                      </div>
                                  </div>
                              ))}
-                             <div className="col-span-2 md:col-span-4 mt-2 text-center">
-                                 <button onClick={handleAnalyzePortfolio} className="w-full py-2 bg-slate-900/50 hover:bg-blue-900/20 text-blue-400 border border-blue-900/30 border-dashed rounded-lg text-sm font-medium transition-colors">
-                                    {t.watchlist.analyzeAll} ({currentMarketPortfolio.length})
-                                 </button>
-                             </div>
                         </div>
                     ) : (
-                        <div className="text-center py-6 border border-dashed border-slate-900 rounded-xl">
-                            <div className="text-slate-600 text-sm">{t.watchlist.empty}</div>
+                        <div className="text-center py-4 border border-dashed border-slate-800 rounded-lg text-xs text-slate-600">
+                            {t.watchlist.empty}
                         </div>
                     )}
                 </div>
@@ -754,7 +1119,7 @@ const App: React.FC = () => {
                     </h2>
                     <p className="text-slate-400 mt-1 ml-11">{t.batchSubtitle}</p>
                  </div>
-                 <button onClick={clearAnalysis} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-sm font-medium border border-slate-700 transition-colors">
+                 <button onClick={clearAnalysis} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-medium border border-slate-700 transition-colors">
                     {t.newAnalysis}
                  </button>
              </div>
@@ -769,7 +1134,8 @@ const App: React.FC = () => {
                                 <th className="p-5 tracking-wider">Symbol</th>
                                 <th className="p-5 tracking-wider">Price Info</th>
                                 <th className="p-5 tracking-wider">AI Signal</th>
-                                <th className="p-5 tracking-wider w-1/3">Key Logic</th>
+                                <th className="p-5 tracking-wider">Thresholds</th>
+                                <th className="p-5 tracking-wider w-1/4">Next Day Action</th>
                                 <th className="p-5 text-right tracking-wider">Analysis</th>
                             </tr>
                         </thead>
@@ -790,8 +1156,34 @@ const App: React.FC = () => {
                                         <div className="text-xs text-slate-500">{item.name}</div>
                                     </td>
                                     <td className="p-5">
-                                        <div className="font-mono text-lg text-slate-200">{item.price}</div>
-                                        <div className={`text-xs font-bold font-mono ${item.change.includes('-') ? 'text-rose-400' : 'text-emerald-400'}`}>{item.change}</div>
+                                        {editingRow === item.code ? (
+                                            <div className="flex items-center gap-2">
+                                                <input 
+                                                    type="number" 
+                                                    value={editPrice}
+                                                    onChange={(e) => setEditPrice(e.target.value)}
+                                                    className="w-20 bg-slate-950 border border-blue-500 rounded px-1 py-0.5 text-sm outline-none"
+                                                    autoFocus
+                                                />
+                                                <button onClick={() => saveEditPrice(item.code, item.name || item.code)} className="text-emerald-400 hover:text-emerald-300">✅</button>
+                                                <button onClick={cancelEditPrice} className="text-rose-400 hover:text-rose-300">❌</button>
+                                            </div>
+                                        ) : (
+                                            <div className="relative group/edit">
+                                                <div className="flex items-center gap-2">
+                                                    <div className="font-mono text-lg text-slate-200">{item.price}</div>
+                                                    <button onClick={() => startEditPrice(item.code, item.price)} className="opacity-0 group-hover/edit:opacity-100 text-slate-600 hover:text-blue-400 transition-opacity">
+                                                        ✎
+                                                    </button>
+                                                </div>
+                                                <div className={`text-xs font-bold font-mono ${getTrendColor(item.change)}`}>{item.change}</div>
+                                                {/* Last Updated Timestamp */}
+                                                <div className={`text-[10px] mt-1 font-mono ${item.lastUpdated?.includes('Manual') ? 'text-yellow-500' : 'text-slate-600'}`}>
+                                                    {item.lastUpdated || 'N/A'}
+                                                    {reanalyzingRows.has(item.code) && <span className="ml-2 animate-spin inline-block">⟳</span>}
+                                                </div>
+                                            </div>
+                                        )}
                                     </td>
                                     <td className="p-5">
                                         <span className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border flex items-center gap-2 w-fit ${getBatchSignalColor(item.signal)}`}>
@@ -799,15 +1191,29 @@ const App: React.FC = () => {
                                             {item.signal} | {item.confidence}%
                                         </span>
                                     </td>
+                                    {/* Thresholds Column */}
                                     <td className="p-5">
-                                        <p className="text-sm text-slate-400 leading-relaxed">{item.reason}</p>
+                                        <div className="flex flex-col gap-1 text-xs font-mono">
+                                            <div className="flex items-center gap-2 text-emerald-300">
+                                                <span>🎯</span> {item.targetPrice || '-'}
+                                            </div>
+                                            <div className="flex items-center gap-2 text-rose-300">
+                                                <span>🛡️</span> {item.stopLoss || '-'}
+                                            </div>
+                                        </div>
+                                    </td>
+                                    {/* Next Day Action Column */}
+                                    <td className="p-5">
+                                        <p className="text-sm text-blue-200 leading-relaxed font-medium">
+                                            {item.action || item.reason}
+                                        </p>
                                     </td>
                                     <td className="p-5 text-right">
                                         <button 
                                             onClick={() => handleDeepDive(item.code)}
                                             className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-bold shadow-lg shadow-blue-900/20 hover:shadow-blue-500/20 transition-all transform hover:-translate-y-0.5 active:translate-y-0"
                                         >
-                                            Deep Dive &rarr;
+                                            Details &rarr;
                                         </button>
                                     </td>
                                 </tr>

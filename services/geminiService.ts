@@ -1,5 +1,6 @@
+
 import { GoogleGenAI, Chat, GenerateContentResponse, Type, Schema } from "@google/genai";
-import { AnalysisResult, Language, Market, AnalysisMode, StructuredAnalysisData, BatchItem } from "../types";
+import { AnalysisResult, Language, Market, AnalysisMode, StructuredAnalysisData, BatchItem, MarketOverview, DeepMacroAnalysis } from "../types";
 
 const MARKET_CONFIG = {
   en: {
@@ -53,6 +54,191 @@ const getGenAIClient = () => {
   return new GoogleGenAI({ apiKey });
 };
 
+// Robust JSON Parsing Helper
+const safeJsonParse = (text: string): any => {
+    try {
+        // 1. Remove Markdown code blocks if present
+        let cleanText = text.replace(new RegExp('```(?:json)?|```', 'g'), '').trim();
+        
+        // 2. Remove comments (single line // or multi-line /* */)
+        cleanText = cleanText.replace(new RegExp('\\/\\/.*$', 'gm'), '').replace(new RegExp('\\/\\*[\\s\\S]*?\\*\\/', 'g'), '');
+
+        // 3. Attempt to find the outermost JSON structure (Array or Object)
+        const firstBrace = cleanText.indexOf(String.fromCharCode(0x7B)); // {
+        const firstBracket = cleanText.indexOf(String.fromCharCode(0x5B)); // [
+        
+        let startIdx = -1;
+        let endIdx = -1;
+        
+        // Determine if we are looking for object or array
+        if (firstBrace !== -1 && (firstBracket === -1 || firstBrace < firstBracket)) {
+            startIdx = firstBrace;
+            endIdx = cleanText.lastIndexOf(String.fromCharCode(0x7D)); // }
+        } else if (firstBracket !== -1) {
+            startIdx = firstBracket;
+            endIdx = cleanText.lastIndexOf(String.fromCharCode(0x5D)); // ]
+        }
+
+        if (startIdx !== -1 && endIdx !== -1) {
+            cleanText = cleanText.substring(startIdx, endIdx + 1);
+        }
+
+        // 4. Fix trailing commas and use Hex escapes for brackets to prevent build errors
+        // Regex looks for comma followed by optional whitespace and then a closing brace/bracket
+        cleanText = cleanText.replace(new RegExp(',\\s*([\\x5D\\x7D])', 'g'), '$1');
+
+        return JSON.parse(cleanText);
+    } catch (e) {
+        console.warn("safeJsonParse failed:", e);
+        return null; // Return null so caller can handle fallback
+    }
+};
+
+// --- MARKET OVERVIEW SERVICE ---
+export const fetchMarketOverview = async (market: Market, lang: Language): Promise<MarketOverview> => {
+    const modelId = "gemini-2.5-flash";
+    const marketName = MARKET_CONFIG[lang][market];
+    const month = new Date().getMonth() + 1; // Current Month
+
+    // Define specific indices based on market
+    let indicesRequest = "";
+    if (market === 'A_SHARE') indicesRequest = "Shanghai Composite (上证指数), Shenzhen Component (深证成指), ChiNext (创业板指)";
+    else if (market === 'US_STOCK') indicesRequest = "Dow Jones, Nasdaq, S&P 500";
+    else if (market === 'HK_STOCK') indicesRequest = "Hang Seng Index (恒生指数), HS Tech (恒生科技), HS CEI (国企指数)";
+
+    const systemInstruction = lang === 'en'
+        ? `You are a Chief Market Strategist. Analyze the current ${marketName} situation.
+           Output STRICT JSON format.`
+        : `你是一位首席市场策略师。请分析当前 ${marketName} 的宏观局势、指数表现和深度资金逻辑。
+           输出严格的 JSON 格式。`;
+
+    const prompt = lang === 'en'
+        ? `Analyze today's ${marketName}.
+           1. Get latest values for: ${indicesRequest}.
+           2. Analyze Sector Rotation Deeply: Where is money going? Why?
+           
+           Return JSON:
+           {
+             "sentimentScore": number (0-100),
+             "sentimentText": "string",
+             "indices": [ {"name": "...", "value": "...", "change": "+...%"} ],
+             "hotSectors": ["sector1", "sector2", "sector3"],
+             "rotationAnalysis": {
+                "inflow": "Which sectors are getting money?",
+                "outflow": "Which sectors are losing money?",
+                "logic": "Deep reason for this rotation (e.g. Policy shift, Earnings)"
+             },
+             "monthlyStrategy": "Short investment advice for month ${month}",
+             "keyRisk": "Biggest risk right now"
+           }`
+        : `分析 ${marketName} 今日行情。
+           1. 获取最新指数数据: ${indicesRequest}。确保数据实时。
+           2. 深度分析板块轮动: 资金到底在怎么动？
+           
+           返回 JSON:
+           {
+             "sentimentScore": 0-100,
+             "sentimentText": "情绪短语",
+             "indices": [ {"name": "指数名", "value": "点数", "change": "涨跌幅(如 +1.20%)"} ], 
+             "hotSectors": ["热门板块1", "热门板块2", "热门板块3"],
+             "rotationAnalysis": {
+                "inflow": "资金流入的主战场 (如: 低估值中字头)",
+                "outflow": "资金流出的避险区 (如: 高位科技股)",
+                "logic": "轮动背后的深度逻辑 (如: 避险情绪升温，防御板块受宠)"
+             },
+             "monthlyStrategy": "${month}月核心策略",
+             "keyRisk": "当前最大风险"
+           }`;
+
+    try {
+        const ai = getGenAIClient();
+        const chat = ai.chats.create({
+            model: modelId,
+            config: {
+                tools: [{ googleSearch: {} }],
+                temperature: 0.2,
+                systemInstruction: systemInstruction,
+            },
+        });
+
+        const response = await chat.sendMessage({ message: prompt });
+        const text = response.text || "{}";
+        
+        const data = safeJsonParse(text);
+        
+        if (!data || typeof data.sentimentScore !== 'number') {
+            throw new Error("Invalid Market Overview Data");
+        }
+        
+        return data as MarketOverview;
+
+    } catch (error) {
+        console.error("Market Pulse Error", error);
+        throw new Error("Failed to fetch market pulse.");
+    }
+};
+
+// --- DEEP MACRO ANALYSIS SERVICE (New) ---
+export const fetchDeepMacroAnalysis = async (market: Market, lang: Language): Promise<DeepMacroAnalysis> => {
+    const modelId = "gemini-2.5-flash";
+    const marketName = MARKET_CONFIG[lang][market];
+
+    const systemInstruction = lang === 'en'
+        ? `You are a Senior Portfolio Manager. Analyze the style rotation between "Defensive/Value" (Main Board) and "Growth/Tech" (Startup Board) in ${marketName}. Provide a decisive strategy and portfolio allocation.`
+        : `你是一位资深基金经理。请深度分析 ${marketName} 中“主板/价值/防守”与“科创/成长/进攻”之间的风格切换逻辑。给出明确的调仓建议和仓位配比模型。`;
+
+    const prompt = lang === 'en'
+        ? `Compare Main Board vs Tech Sectors today. Should I switch styles?
+           Return strict JSON:
+           {
+             "mainBoard": { "opportunity": "...", "recommendedSectors": ["..."], "logic": "..." },
+             "techGrowth": { "opportunity": "...", "recommendedSectors": ["..."], "logic": "..." },
+             "strategy": "SWITCH_TO_MAIN" | "SWITCH_TO_TECH" | "BALANCE" | "DEFENSIVE",
+             "summary": "Actionable advice in 1 sentence.",
+             "suggestedAllocation": [
+                { "category": "Aggressive/Growth", "percentage": 30, "rationale": "Why this %?", "examples": ["Sector1", "Sector2"] },
+                { "category": "Defensive/Value", "percentage": 50, "rationale": "Why this %?", "examples": ["Sector3"] },
+                { "category": "Cash/Hedging", "percentage": 20, "rationale": "Why this %?", "examples": ["Bonds/Gold"] }
+             ]
+           }`
+        : `对比今日主板蓝筹与科创成长的表现。资金在向哪边倾斜？
+           返回严格 JSON:
+           {
+             "mainBoard": { "opportunity": "主板机会点", "recommendedSectors": ["板块A", "板块B"], "logic": "看好理由" },
+             "techGrowth": { "opportunity": "成长/科创机会点", "recommendedSectors": ["板块C", "板块D"], "logic": "看好理由" },
+             "strategy": "SWITCH_TO_MAIN" (切向主板) | "SWITCH_TO_TECH" (切向成长) | "BALANCE" (均衡配置) | "DEFENSIVE" (全面防守),
+             "summary": "一句话实战建议",
+             "suggestedAllocation": [
+                { "category": "进攻/成长仓 (如科技)", "percentage": 30, "rationale": "简短理由", "examples": ["半导体", "AI"] },
+                { "category": "稳健/防守仓 (如红利)", "percentage": 50, "rationale": "简短理由", "examples": ["银行", "煤炭"] },
+                { "category": "现金/对冲", "percentage": 20, "rationale": "简短理由", "examples": ["逆回购"] }
+             ]
+           }
+           注意：suggestedAllocation 中的 percentage 总和必须为 100。`;
+
+    try {
+        const ai = getGenAIClient();
+        const chat = ai.chats.create({
+            model: modelId,
+            config: {
+                tools: [{ googleSearch: {} }],
+                temperature: 0.2,
+                systemInstruction: systemInstruction,
+            },
+        });
+
+        const response = await chat.sendMessage({ message: prompt });
+        const text = response.text || "{}";
+        const data = safeJsonParse(text);
+        
+        if (!data || !data.strategy) throw new Error("Invalid Deep Analysis Data");
+        return data as DeepMacroAnalysis;
+    } catch (e) {
+        console.error("Deep Macro Error", e);
+        throw new Error("Failed to perform deep macro analysis.");
+    }
+};
+
 // --- SMART DISCOVERY SERVICE ---
 export const discoverStocksByTheme = async (
   theme: string,
@@ -92,23 +278,70 @@ export const discoverStocksByTheme = async (
 
     // Parse JSON Array
     let codes: string[] = [];
-    const jsonMatch = text.match(/\[[\s\S]*?\]/);
-    if (jsonMatch) {
-      try {
-        codes = JSON.parse(jsonMatch[0]);
-      } catch (e) {
-        console.warn("Discovery JSON parse failed", e);
-      }
+    const parsed = safeJsonParse(text);
+    if (parsed && Array.isArray(parsed)) {
+        codes = parsed;
     }
 
     // Clean codes (remove .SH, .SZ suffixes if present, though we want raw codes mostly)
     // A-Share codes are usually 6 digits.
-    return codes.map(c => c.replace(/[^a-zA-Z0-9]/g, '')).slice(0, 6); // Limit to top 6
+    return codes.map(c => c.replace(new RegExp('[^a-zA-Z0-9]', 'g'), '')).slice(0, 6); // Limit to top 6
 
   } catch (error) {
     console.error("Smart Discovery Error", error);
     throw new Error("Failed to discover stocks.");
   }
+};
+
+// --- PORTFOLIO SCREENSHOT SERVICE ---
+export const parsePortfolioScreenshot = async (
+  imageBase64: string,
+  market: Market,
+  lang: Language
+): Promise<any[]> => {
+    const modelId = "gemini-2.5-flash";
+    const marketName = MARKET_CONFIG[lang][market];
+
+    const systemInstruction = lang === 'en' 
+        ? `You are an OCR assistant for financial apps. Extract stock holdings from the screenshot.
+           Return a JSON Array of objects: { "code": string, "name": string, "quantity": number, "avgCost": number }.
+           If stock code is missing, INFER it from the stock name.`
+        : `你是一个金融APP截图识别助手。请从截图中提取持仓信息。
+           对于 A股 (同花顺/东方财富等APP)：
+           1. 必须提取: "股票名称", "股票代码", "持仓/可用"(作为 quantity), "成本/现价"(取成本价作为 avgCost)。
+           2. **关键**: 很多APP截图只显示股票名称(如"云天化")不显示代码。你**必须**根据名称推断出正确的6位A股代码 (如 "600096")。
+           3. 返回严格的 JSON 数组: [{ "code": "600096", "name": "云天化", "quantity": 700, "avgCost": 31.455 }, ...]。
+           4. 忽略表头和无关文字。`;
+
+    try {
+        const ai = getGenAIClient();
+        const chat = ai.chats.create({
+            model: modelId,
+            config: {
+                temperature: 0.1,
+                systemInstruction: systemInstruction
+            }
+        });
+
+        // Strip data prefix
+        const base64Data = imageBase64.split(',')[1] || imageBase64;
+        const mimeType = imageBase64.match(new RegExp('data:([^;]+);'))?.[1] || 'image/jpeg';
+
+        const response = await chat.sendMessage({
+            content: [
+                { text: `Extract holdings from this ${marketName} app screenshot.` },
+                { inlineData: { mimeType, data: base64Data } }
+            ]
+        });
+
+        const text = response.text || "[]";
+        const parsed = safeJsonParse(text);
+        
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+        console.error("Portfolio Parse Error", error);
+        return [];
+    }
 };
 
 // --- BATCH ANALYSIS SERVICE ---
@@ -122,30 +355,47 @@ export const startBatchAnalysis = async (
   const marketName = MARKET_CONFIG[lang][market];
   const codeList = stockCodes.join(", ");
   
-  // NOTE: responseSchema CANNOT be used with googleSearch tool in the current API version.
-  // We must rely on prompt engineering to get JSON.
-  
   const systemInstruction = lang === 'en'
     ? `You are a Quantitative Analyst. User will provide a list of stocks. 
        Get real-time data for ALL of them using the search tool.
-       CRITICAL OUTPUT RULE: You must return the result as a STRICT JSON ARRAY ONLY.
-       Do NOT write any introduction, explanation, or markdown text outside the JSON block.
-       The JSON should be an array of objects.`
-    : `你是一位量化分析师。用户将提供一组股票代码。
-       请利用搜索工具获取所有股票的实时数据。
-       **关键输出规则**: 必须仅返回一个严格的 JSON 数组。
-       不要在 JSON 之外输出任何介绍、解释或 Markdown 文本。
-       JSON 必须是一个对象数组。`;
+       CRITICAL RULES:
+       1. OUTPUT: STRICT JSON ARRAY ONLY. No markdown outside JSON.
+       2. HALLUCINATION CHECK: Verify the Price and Name match the Code.
+       3. TIME CHECK: If today is weekend/holiday, use LAST CLOSING price but MARK the date.
+       4. MISSING DATA: If live price is not found, DO NOT INVENT ONE. Use "N/A".
+       `
+    : `你是一位量化分析师。
+       **核心任务**: 获取以下 A股/美股/港股 的实时行情，并给出操作建议。
+       **严格约束**:
+       1. **反幻觉**: 必须通过搜索验证“股票名称”与“代码”是否匹配。如果搜索结果不明确，不要瞎编价格。
+       2. **时效性**: 必须返回搜索结果中显示的数据时间 (lastUpdated)。不要自己计算价格。
+       3. **输出格式**: 必须仅返回一个严格的 JSON 数组。禁止输出其他文字。`;
 
   const prompt = lang === 'en' 
-    ? `Analyze these stocks in ${marketName}: [${codeList}].
-       Fetch latest price, change%, and technical summary for each.
-       Return a JSON Array where each object has these keys: 
-       "code" (string), "name" (string), "price" (string), "change" (string, include + or -), "signal" (BUY/SELL/HOLD/WAIT), "confidence" (number 0-100), "reason" (short summary string).`
-    : `分析 ${marketName} 的这些股票: [${codeList}]。
-       获取每只股票的最新价格、涨跌幅和技术面摘要。
-       返回一个 JSON 数组，每个对象包含以下键:
-       "code" (代码), "name" (名称), "price" (价格), "change" (涨跌幅, 带符号), "signal" (BUY/SELL/HOLD/WAIT), "confidence" (置信度数值 0-100), "reason" (简短理由)。`;
+    ? `Analyze: [${codeList}].
+       Return JSON Array:
+       [{
+         "code": "string", "name": "string", 
+         "price": "string", "change": "string", 
+         "lastUpdated": "string (e.g. 12-02 15:00)",
+         "signal": "BUY/SELL/HOLD", "confidence": number, 
+         "reason": "short summary",
+         "targetPrice": "string (Take Profit)",
+         "stopLoss": "string (Hard Stop)",
+         "action": "string (Next Day Strategy, e.g. 'Buy at 20.5')"
+       }]`
+    : `分析列表: [${codeList}]。
+       返回 JSON 数组 (必须包含以下字段):
+       [{
+         "code": "代码", "name": "名称", 
+         "price": "当前价格 (必需)", "change": "涨跌幅", 
+         "lastUpdated": "数据时间 (如: 12-02 15:00, 必须准确)",
+         "signal": "信号(BUY/SELL/HOLD)", "confidence": 0-100, 
+         "reason": "简短理由",
+         "targetPrice": "第一止盈位",
+         "stopLoss": "刚性止损位",
+         "action": "明日实操指令 (如: '回踩32.5低吸' 或 '冲高减仓')"
+       }]`;
 
   try {
     const ai = getGenAIClient();
@@ -155,7 +405,6 @@ export const startBatchAnalysis = async (
         tools: [{ googleSearch: {} }],
         temperature: 0.1,
         systemInstruction: systemInstruction,
-        // responseMimeType and responseSchema REMOVED to avoid conflict with tools
       },
     });
 
@@ -171,43 +420,14 @@ export const startBatchAnalysis = async (
 
     let batchData: BatchItem[] = [];
     
-    // Robust JSON Parsing Logic
-    try {
-        // 1. Try parsing raw text directly
-        batchData = JSON.parse(fullText);
-    } catch (e) {
-        // 2. Try extracting from Markdown Code Block ```json ... ```
-        const jsonBlockMatch = fullText.match(/```(?:json)?\s*(\[[\s\S]*?\])\s*```/);
-        if (jsonBlockMatch) {
-            try {
-                batchData = JSON.parse(jsonBlockMatch[1]);
-            } catch (e2) {
-                console.warn("Failed to parse JSON block in batch mode", e2);
-            }
-        } else {
-             // 3. Try finding the first '[' and last ']'
-             const firstBracket = fullText.indexOf('[');
-             const lastBracket = fullText.lastIndexOf(']');
-             if (firstBracket !== -1 && lastBracket !== -1 && lastBracket > firstBracket) {
-                 try {
-                     const potentialJson = fullText.substring(firstBracket, lastBracket + 1);
-                     batchData = JSON.parse(potentialJson);
-                 } catch (e3) {
-                     console.warn("Failed to parse extracted array", e3);
-                 }
-             }
-        }
-    }
-
-    if (!Array.isArray(batchData) || batchData.length === 0) {
-        console.error("Batch Analysis yielded no valid JSON array:", fullText);
-        // Fallback for single item if somehow object returned instead of array
-        if (batchData && typeof batchData === 'object' && !Array.isArray(batchData)) {
-            // @ts-ignore
-            batchData = [batchData];
-        } else {
-            throw new Error("Invalid JSON format received from AI.");
-        }
+    const parsed = safeJsonParse(fullText);
+    if (Array.isArray(parsed)) {
+        batchData = parsed;
+    } else if (parsed && typeof parsed === 'object') {
+        // @ts-ignore
+        batchData = [parsed];
+    } else {
+         console.warn("Failed to parse batch JSON, falling back to empty.");
     }
 
     return {
@@ -226,6 +446,71 @@ export const startBatchAnalysis = async (
       console.error("Batch Error", error);
       throw new Error("Batch analysis failed.");
   }
+};
+
+// --- INLINE PRICE CORRECTION & RE-ANALYSIS ---
+export const reanalyzeStockWithUserPrice = async (
+    code: string,
+    name: string,
+    userPrice: string,
+    market: Market,
+    lang: Language
+): Promise<BatchItem> => {
+    const modelId = "gemini-2.5-flash";
+    const marketName = MARKET_CONFIG[lang][market];
+
+    const systemInstruction = lang === 'en'
+        ? `You are a Technical Analyst. The user provides a MANUAL OVERRIDE price for a stock.
+           Ignore previous search results. Trust this user price as current truth.
+           Recalculate signals, stop loss, and target based on this new price level.`
+        : `你是一位技术分析师。用户提供了股票 "${name}" (${code}) 的**人工修正价格**。
+           **必须**以用户提供的价格 (${userPrice}) 为准，重新评估当前的技术面形态（是否突破、是否破位）。
+           重新计算止盈位、止损位和明日操作策略。
+           返回严格 JSON 对象。`;
+    
+    const prompt = lang === 'en'
+        ? `Stock: ${code} (${name}). User Price: ${userPrice}.
+           Return JSON Object: { "code": "${code}", "name": "${name}", "price": "${userPrice}", "change": "N/A", "lastUpdated": "Manual Input", "signal": "...", "confidence": ..., "reason": "...", "targetPrice": "...", "stopLoss": "...", "action": "..." }`
+        : `股票: ${code} (${name})。当前价格修正为: ${userPrice}。
+           请重新分析并返回 JSON 对象:
+           {
+             "code": "${code}", "name": "${name}", 
+             "price": "${userPrice}", "change": "N/A", 
+             "lastUpdated": "Manual Input",
+             "signal": "...", "confidence": 0-100, 
+             "reason": "基于新价格的分析...", 
+             "targetPrice": "...", "stopLoss": "...", 
+             "action": "..."
+           }`;
+
+    try {
+        const ai = getGenAIClient();
+        const chat = ai.chats.create({
+            model: modelId,
+            config: {
+                temperature: 0.1,
+                systemInstruction: systemInstruction
+            }
+        });
+
+        const response = await chat.sendMessage({ message: prompt });
+        const text = response.text || "{}";
+        const data = safeJsonParse(text);
+
+        // FORCE IDENTITY INTEGRITY
+        if (data) {
+            data.code = code;
+            data.name = name;
+            data.price = userPrice;
+            data.lastUpdated = lang === 'en' ? "Manual Input" : "人工录入";
+        }
+
+        return data as BatchItem;
+
+    } catch (e) {
+        console.error("Reanalysis Error", e);
+        throw new Error("Failed to re-analyze.");
+    }
 };
 
 // --- SINGLE STOCK ANALYSIS SERVICE ---
@@ -452,7 +737,7 @@ export const startStockChat = async (
     if (imageBase64) {
         // Strip data prefix if present (e.g. data:image/png;base64,)
         const base64Data = imageBase64.split(',')[1] || imageBase64;
-        const mimeType = imageBase64.match(/data:([^;]+);/)?.[1] || 'image/jpeg';
+        const mimeType = imageBase64.match(new RegExp('data:([^;]+);'))?.[1] || 'image/jpeg';
         
         messageContent = [
             { text: initialPrompt },
@@ -476,47 +761,25 @@ export const startStockChat = async (
       
       if (chunkText) {
         fullText += chunkText;
-        // Invoke callback to update UI in real-time
         if (onStream) {
           onStream(fullText);
         }
       }
 
-      // Collect grounding chunks as they arrive
       if (c.candidates?.[0]?.groundingMetadata?.groundingChunks) {
         groundingChunks.push(...c.candidates[0].groundingMetadata.groundingChunks);
       }
     }
     
-    // Fallback if empty
     let text = fullText || (lang === 'en' ? "No analysis generated." : "未生成分析结果。");
     
-    // Parse JSON Block (Final processing)
     let structuredData: StructuredAnalysisData | undefined;
     
-    const jsonBlockRegex = /```(?:json)?\s*(\{[\s\S]*?"signal"[\s\S]*?"entryPrice"[\s\S]*?\})\s*```/i;
-    const rawJsonRegex = /(\{[\s\S]*?"signal"[\s\S]*?"entryPrice"[\s\S]*?\})\s*$/i;
-
-    let match = text.match(jsonBlockRegex);
-    let jsonStr = '';
-
-    if (match) {
-        jsonStr = match[1];
-        text = text.replace(match[0], '').trim(); 
-    } else {
-        match = text.match(rawJsonRegex);
-        if (match) {
-             jsonStr = match[1];
-             text = text.replace(match[0], '').trim();
-        }
-    }
-
-    if (jsonStr) {
-        try {
-            structuredData = JSON.parse(jsonStr);
-        } catch (e) {
-            console.warn("JSON Parse Error", e);
-        }
+    const parsed = safeJsonParse(text);
+    if (parsed && parsed.signal) {
+        structuredData = parsed;
+        const jsonBlockRegex = new RegExp('```(?:json)?\\s*(\\{[\\s\\S]*?"signal"[\\s\\S]*?"entryPrice"[\\s\\S]*?\\})\\s*```', 'i');
+        text = text.replace(jsonBlockRegex, '').trim();
     }
 
     const groundingSources = groundingChunks

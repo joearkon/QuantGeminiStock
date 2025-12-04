@@ -1,3 +1,4 @@
+
 export enum SignalType {
   BUY = 'BUY',
   SELL = 'SELL',
@@ -27,6 +28,53 @@ export interface BatchItem {
   signal: string;
   confidence: number;
   reason: string;
+  targetPrice?: string;
+  stopLoss?: string;
+  action?: string;
+  lastUpdated?: string;
+}
+
+export interface MarketIndex {
+  name: string;
+  value: string;
+  change: string; // e.g. "+1.20%" or "-0.5%"
+}
+
+export interface MarketOverview {
+  sentimentScore: number; // 0-100
+  sentimentText: string;
+  indices: MarketIndex[]; // New: List of 3 major indices
+  hotSectors: string[];
+  rotationAnalysis: {
+      inflow: string; // "Funds flowing INTO..."
+      outflow: string; // "Funds flowing OUT of..."
+      logic: string; // "Reason: ..."
+  }; 
+  monthlyStrategy: string;
+  keyRisk: string;
+}
+
+export interface AllocationBucket {
+  category: string; // e.g. "Core Defensive"
+  percentage: number; // e.g. 50
+  rationale: string;
+  examples: string[];
+}
+
+export interface DeepMacroAnalysis {
+  mainBoard: {
+    opportunity: string; // e.g., "High Dividend Yields"
+    recommendedSectors: string[];
+    logic: string;
+  };
+  techGrowth: {
+    opportunity: string; // e.g., "AI Hardware Rebound"
+    recommendedSectors: string[];
+    logic: string;
+  };
+  strategy: 'SWITCH_TO_MAIN' | 'SWITCH_TO_TECH' | 'BALANCE' | 'DEFENSIVE';
+  summary: string; // Actionable advice like "Shift 30% position to Banks"
+  suggestedAllocation?: AllocationBucket[];
 }
 
 export interface AnalysisResult {
@@ -64,4 +112,6 @@ export interface PortfolioItem {
   market: Market;
   addedAt: number;
   name?: string;
+  quantity?: number;
+  avgCost?: number;
 }
