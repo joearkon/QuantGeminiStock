@@ -1,7 +1,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { startStockChat, startBatchAnalysis, sendFollowUpMessage, discoverStocksByTheme, parsePortfolioScreenshot, reanalyzeStockWithUserPrice, fetchMarketOverview, fetchDeepMacroAnalysis } from './services/geminiService';
-import { AnalysisResult, Language, Market, ChatMessage, AnalysisMode, BatchItem, PortfolioItem, MarketOverview, DeepMacroAnalysis } from './types';
+import { startStockChat, startBatchAnalysis, sendFollowUpMessage, discoverStocksByTheme, parsePortfolioScreenshot, reanalyzeStockWithUserPrice, fetchMarketOverview, fetchDeepMacroAnalysis, fetchTradeSetupByHorizon } from './services/geminiService';
+import { AnalysisResult, Language, Market, ChatMessage, AnalysisMode, BatchItem, PortfolioItem, MarketOverview, DeepMacroAnalysis, TimeHorizon, TradeSetup } from './types';
 import { TerminalLoader } from './components/TerminalLoader';
 import { MarkdownRenderer } from './components/MarkdownRenderer';
 import { QuantTools } from './components/QuantTools';
@@ -195,6 +195,12 @@ const App: React.FC = () => {
   // Deep Macro State
   const [deepAnalysis, setDeepAnalysis] = useState<DeepMacroAnalysis | null>(null);
   const [isDeepAnalyzing, setIsDeepAnalyzing] = useState(false);
+  const [activeProfile, setActiveProfile] = useState<'AGGRESSIVE' | 'BALANCED'>('BALANCED');
+
+  // Trade Setup State (Horizon)
+  const [activeHorizon, setActiveHorizon] = useState<TimeHorizon>('MEDIUM');
+  const [tradeSetup, setTradeSetup] = useState<TradeSetup | null>(null);
+  const [isSetupLoading, setIsSetupLoading] = useState(false);
 
   // Portfolio State
   const [portfolio, setPortfolio] = useState<PortfolioItem[]>(() => {
@@ -264,10 +270,34 @@ const App: React.FC = () => {
       try {
           const data = await fetchDeepMacroAnalysis(market, language);
           setDeepAnalysis(data);
+          setActiveProfile('BALANCED'); // Default to Balanced
       } catch (e) {
           console.error("Deep macro failed", e);
       } finally {
           setIsDeepAnalyzing(false);
+      }
+  };
+
+  // Switch Horizon Logic
+  const handleHorizonChange = async (newHorizon: TimeHorizon) => {
+      setActiveHorizon(newHorizon);
+      if (!singleResult) return;
+      
+      setIsSetupLoading(true);
+      try {
+          // Use symbol from result (which might be the code or image name)
+          // For image analysis without code, this might be tricky, but let's assume code flow for now
+          const setup = await fetchTradeSetupByHorizon(singleResult.symbol, market, newHorizon, language);
+          setTradeSetup(setup);
+          
+          // Auto-update structured data for the Calculator
+          if (setup.updatedData) {
+              setSingleResult(prev => prev ? { ...prev, structuredData: setup.updatedData } : null);
+          }
+      } catch (e) {
+          console.error("Setup fetch failed", e);
+      } finally {
+          setIsSetupLoading(false);
       }
   };
 
@@ -436,6 +466,10 @@ const App: React.FC = () => {
     setStreamingAnalysisText(''); 
     setChatHistory([]); // Clear chat for new single analysis
     chatSessionRef.current = null;
+    
+    // Reset Trade Setup
+    setTradeSetup(null);
+    setActiveHorizon('MEDIUM');
 
     try {
       if (isBatchRequest) {
@@ -701,6 +735,9 @@ const App: React.FC = () => {
   // Filter portfolio for current view
   const currentMarketPortfolio = portfolio.filter(p => p.market === market);
 
+  // Helper for Profile Rendering
+  const currentProfile = deepAnalysis?.profiles ? (activeProfile === 'AGGRESSIVE' ? deepAnalysis.profiles.aggressive : deepAnalysis.profiles.balanced) : null;
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 font-sans selection:bg-blue-500/30">
       {/* Header */}
@@ -782,7 +819,17 @@ const App: React.FC = () => {
                                      <div className="font-bold text-slate-400 text-xs uppercase">{idx.name}</div>
                                      <div className="text-right">
                                          <div className="text-white font-mono font-bold text-lg">{idx.value}</div>
-                                         <div className={`text-xs font-mono ${getTrendColor(idx.change)}`}>{idx.change}</div>
+                                         <div className="flex items-center justify-end gap-2">
+                                             <div className={`text-xs font-mono font-bold ${getTrendColor(idx.change)}`}>{idx.change}</div>
+                                             {/* TIMESTAMP Display */}
+                                             <div className={`text-[9px] font-mono border px-1 rounded ${
+                                                 idx.timestamp?.includes('Close') || idx.timestamp?.includes('昨日') 
+                                                 ? 'text-yellow-500 border-yellow-900/30 bg-yellow-900/10' 
+                                                 : 'text-slate-500 border-slate-700'
+                                             }`}>
+                                                 {idx.timestamp}
+                                             </div>
+                                         </div>
                                      </div>
                                  </div>
                              ))}
@@ -904,52 +951,87 @@ const App: React.FC = () => {
                             </div>
                             
                             {/* Verdict */}
-                            <div className="bg-slate-900 p-4 rounded-xl border-l-4 border-emerald-500">
+                            <div className="bg-slate-900 p-4 rounded-xl border-l-4 border-emerald-500 mb-6">
                                 <div className="text-xs font-bold text-emerald-400 uppercase mb-1">Strategist Verdict</div>
                                 <p className="text-sm text-white">{deepAnalysis.summary}</p>
                             </div>
 
-                            {/* Portfolio Allocation Model */}
-                            {deepAnalysis.suggestedAllocation && (
-                                <div className="mt-6 border-t border-slate-800 pt-6">
-                                    <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">{language === 'en' ? 'Suggested Allocation Model' : '建议仓位配置模型'}</h4>
-                                    
-                                    {/* Visual Bar */}
-                                    <div className="h-4 w-full rounded-full overflow-hidden flex mb-4">
-                                        {deepAnalysis.suggestedAllocation.map((bucket, i) => {
-                                            const colors = ['bg-purple-500', 'bg-blue-500', 'bg-slate-600'];
-                                            return (
-                                                <div 
-                                                    key={i} 
-                                                    style={{ width: `${bucket.percentage}%` }} 
-                                                    className={`${colors[i % colors.length]} h-full`}
-                                                    title={`${bucket.category}: ${bucket.percentage}%`}
-                                                />
-                                            );
-                                        })}
+                            {/* Portfolio Allocation Model - DUAL MODE */}
+                            {deepAnalysis.profiles && (
+                                <div className="border-t border-slate-800 pt-6">
+                                    <div className="flex justify-between items-center mb-4">
+                                         <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider">{language === 'en' ? 'Suggested Portfolio Models' : '建议仓位配置模型'}</h4>
+                                         
+                                         {/* Profile Toggles */}
+                                         <div className="flex bg-slate-900 p-1 rounded-lg border border-slate-800">
+                                             <button 
+                                                onClick={() => setActiveProfile('AGGRESSIVE')}
+                                                className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-2 ${activeProfile === 'AGGRESSIVE' ? 'bg-purple-900/50 text-purple-300 border border-purple-800' : 'text-slate-500 hover:text-purple-400'}`}
+                                             >
+                                                 🚀 {language === 'en' ? 'Aggressive' : '激进型'}
+                                             </button>
+                                             <button 
+                                                onClick={() => setActiveProfile('BALANCED')}
+                                                className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all flex items-center gap-2 ${activeProfile === 'BALANCED' ? 'bg-blue-900/50 text-blue-300 border border-blue-800' : 'text-slate-500 hover:text-blue-400'}`}
+                                             >
+                                                 ⚖️ {language === 'en' ? 'Balanced' : '平衡型'}
+                                             </button>
+                                         </div>
                                     </div>
 
-                                    {/* Legend / Details */}
-                                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                        {deepAnalysis.suggestedAllocation.map((bucket, i) => {
-                                            const textColors = ['text-purple-400', 'text-blue-400', 'text-slate-400'];
-                                            const borderColors = ['border-purple-900', 'border-blue-900', 'border-slate-800'];
-                                            return (
-                                                <div key={i} className={`p-3 rounded-lg border bg-slate-900/30 ${borderColors[i % borderColors.length]}`}>
-                                                    <div className="flex justify-between items-center mb-1">
-                                                        <span className={`text-xs font-bold ${textColors[i % textColors.length]}`}>{bucket.category}</span>
-                                                        <span className="text-sm font-mono font-bold text-white">{bucket.percentage}%</span>
-                                                    </div>
-                                                    <p className="text-[10px] text-slate-400 mb-2 h-8 overflow-hidden">{bucket.rationale}</p>
-                                                    <div className="flex flex-wrap gap-1">
-                                                        {bucket.examples.map((ex, j) => (
-                                                            <span key={j} className="text-[9px] px-1.5 py-0.5 bg-slate-800 rounded text-slate-300 border border-slate-700">{ex}</span>
-                                                        ))}
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
+                                    {/* Selected Profile Description */}
+                                    {currentProfile && (
+                                        <div className="animate-fade-in">
+                                            <p className="text-sm text-slate-300 mb-4 italic pl-2 border-l-2 border-slate-700">
+                                                "{currentProfile.description}"
+                                            </p>
+                                            
+                                            {/* Visual Bar */}
+                                            <div className="h-4 w-full rounded-full overflow-hidden flex mb-4 border border-slate-800 bg-slate-900">
+                                                {currentProfile.allocations.map((bucket, i) => {
+                                                    const aggressiveColors = ['bg-purple-500', 'bg-rose-500', 'bg-slate-600'];
+                                                    const balancedColors = ['bg-blue-500', 'bg-emerald-500', 'bg-slate-600'];
+                                                    const colors = activeProfile === 'AGGRESSIVE' ? aggressiveColors : balancedColors;
+                                                    return (
+                                                        <div 
+                                                            key={i} 
+                                                            style={{ width: `${bucket.percentage}%` }} 
+                                                            className={`${colors[i % colors.length]} h-full transition-all duration-500`}
+                                                            title={`${bucket.category}: ${bucket.percentage}%`}
+                                                        />
+                                                    );
+                                                })}
+                                            </div>
+
+                                            {/* Legend / Details */}
+                                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                                                {currentProfile.allocations.map((bucket, i) => {
+                                                    const aggressiveText = ['text-purple-400', 'text-rose-400', 'text-slate-400'];
+                                                    const balancedText = ['text-blue-400', 'text-emerald-400', 'text-slate-400'];
+                                                    const textColors = activeProfile === 'AGGRESSIVE' ? aggressiveText : balancedText;
+                                                    
+                                                    const aggressiveBorder = ['border-purple-900', 'border-rose-900', 'border-slate-800'];
+                                                    const balancedBorder = ['border-blue-900', 'border-emerald-900', 'border-slate-800'];
+                                                    const borderColors = activeProfile === 'AGGRESSIVE' ? aggressiveBorder : balancedBorder;
+
+                                                    return (
+                                                        <div key={i} className={`p-3 rounded-lg border bg-slate-900/30 ${borderColors[i % borderColors.length]} transition-colors duration-300`}>
+                                                            <div className="flex justify-between items-center mb-1">
+                                                                <span className={`text-xs font-bold ${textColors[i % textColors.length]}`}>{bucket.category}</span>
+                                                                <span className="text-sm font-mono font-bold text-white">{bucket.percentage}%</span>
+                                                            </div>
+                                                            <p className="text-[10px] text-slate-400 mb-2 h-8 overflow-hidden">{bucket.rationale}</p>
+                                                            <div className="flex flex-wrap gap-1">
+                                                                {bucket.examples.map((ex, j) => (
+                                                                    <span key={j} className="text-[9px] px-1.5 py-0.5 bg-slate-800 rounded text-slate-300 border border-slate-700">{ex}</span>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    )}
                                 </div>
                             )}
                         </div>
@@ -1310,6 +1392,70 @@ const App: React.FC = () => {
              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
                 {/* Main Content Area (Report + Chat) */}
                 <div id="printable-report" className="lg:col-span-8 flex flex-col gap-6">
+
+                   {/* --- HORIZON STRATEGY CARD (New) --- */}
+                   {singleResult && (
+                       <div className="bg-slate-900/50 border border-blue-900/30 rounded-2xl p-4 no-print relative overflow-hidden">
+                           {/* Horizon Tabs */}
+                           <div className="flex justify-between items-center mb-4 border-b border-slate-800 pb-2">
+                               <h3 className="text-sm font-bold text-slate-300 uppercase tracking-wider flex items-center gap-2">
+                                   <svg className="w-4 h-4 text-blue-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                                   {language === 'en' ? 'Strategy Horizon' : '时空交易规划'}
+                               </h3>
+                               <div className="flex bg-slate-950 rounded-lg p-1 border border-slate-800">
+                                   {(['SHORT', 'MEDIUM', 'LONG'] as TimeHorizon[]).map(h => (
+                                       <button
+                                           key={h}
+                                           onClick={() => handleHorizonChange(h)}
+                                           className={`px-3 py-1 text-[10px] font-bold rounded transition-colors ${activeHorizon === h ? 'bg-blue-600 text-white' : 'text-slate-500 hover:text-slate-300'}`}
+                                       >
+                                           {h === 'SHORT' ? (language === 'en' ? 'Short (<1M)' : '短线 (1月内)') :
+                                            h === 'MEDIUM' ? (language === 'en' ? 'Mid (2-4M)' : '中线 (2-4月)') :
+                                            (language === 'en' ? 'Long (6M+)' : '长线 (半年+)')}
+                                       </button>
+                                   ))}
+                               </div>
+                           </div>
+
+                           {/* Setup Content */}
+                           {isSetupLoading ? (
+                               <div className="py-6 text-center text-slate-500 text-xs font-mono animate-pulse">
+                                   Calculating {activeHorizon.toLowerCase()} term volatility & targets...
+                               </div>
+                           ) : tradeSetup ? (
+                               <div className="grid grid-cols-1 md:grid-cols-4 gap-4 animate-fade-in">
+                                   <div className="p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+                                       <div className="text-[10px] text-slate-500 uppercase mb-1">Signal</div>
+                                       <div className={`text-lg font-bold ${tradeSetup.recommendation === 'BUY' ? 'text-emerald-400' : tradeSetup.recommendation === 'SELL' ? 'text-rose-400' : 'text-yellow-400'}`}>
+                                           {tradeSetup.recommendation}
+                                       </div>
+                                   </div>
+                                   <div className="p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+                                       <div className="text-[10px] text-blue-400 uppercase mb-1">Entry Zone</div>
+                                       <div className="text-lg font-bold text-white font-mono">{tradeSetup.entryZone}</div>
+                                   </div>
+                                   <div className="p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+                                        <div className="text-[10px] text-rose-400 uppercase mb-1">Invalidation (Stop)</div>
+                                        <div className="text-lg font-bold text-white font-mono">{tradeSetup.invalidLevel}</div>
+                                   </div>
+                                   <div className="p-3 bg-slate-800/50 rounded-lg border border-slate-700">
+                                        <div className="text-[10px] text-emerald-400 uppercase mb-1">Target</div>
+                                        <div className="text-lg font-bold text-white font-mono">{tradeSetup.targetLevel}</div>
+                                   </div>
+                                   <div className="col-span-1 md:col-span-4 mt-2 px-2">
+                                       <p className="text-xs text-slate-400 italic">
+                                           <span className="font-bold text-blue-400">Logic: </span>
+                                           {tradeSetup.technicalRationale}
+                                       </p>
+                                   </div>
+                               </div>
+                           ) : (
+                               <div className="py-4 text-center text-slate-600 text-xs italic">
+                                   Select a horizon to generate specific trade setup.
+                               </div>
+                           )}
+                       </div>
+                   )}
                    
                    {/* Main Analysis Card */}
                    <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 md:p-8 shadow-2xl relative overflow-hidden">

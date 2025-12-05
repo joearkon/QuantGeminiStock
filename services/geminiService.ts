@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, Chat, GenerateContentResponse, Type, Schema } from "@google/genai";
-import { AnalysisResult, Language, Market, AnalysisMode, StructuredAnalysisData, BatchItem, MarketOverview, DeepMacroAnalysis } from "../types";
+import { AnalysisResult, Language, Market, AnalysisMode, StructuredAnalysisData, BatchItem, MarketOverview, DeepMacroAnalysis, TimeHorizon, TradeSetup } from "../types";
 
 const MARKET_CONFIG = {
   en: {
@@ -114,37 +114,39 @@ export const fetchMarketOverview = async (market: Market, lang: Language): Promi
 
     const prompt = lang === 'en'
         ? `Analyze today's ${marketName}.
-           1. Get latest values for: ${indicesRequest}.
-           2. Analyze Sector Rotation Deeply: Where is money going? Why?
+           1. Get REAL-TIME values for: ${indicesRequest}.
+           2. CRITICAL: For each index, you MUST provide the 'timestamp' of the data (e.g., '14:35' or '12-03 Close'). DO NOT HALLUCINATE. If live data is unavailable, state the last close time.
+           3. Analyze Sector Rotation Deeply: Where is money going? Why?
            
            Return JSON:
            {
              "sentimentScore": number (0-100),
              "sentimentText": "string",
-             "indices": [ {"name": "...", "value": "...", "change": "+...%"} ],
+             "indices": [ {"name": "...", "value": "...", "change": "+...%", "timestamp": "..."} ],
              "hotSectors": ["sector1", "sector2", "sector3"],
              "rotationAnalysis": {
                 "inflow": "Which sectors are getting money?",
                 "outflow": "Which sectors are losing money?",
-                "logic": "Deep reason for this rotation (e.g. Policy shift, Earnings)"
+                "logic": "Deep reason for this rotation"
              },
-             "monthlyStrategy": "Short investment advice for month ${month}",
-             "keyRisk": "Biggest risk right now"
+             "monthlyStrategy": "Short investment advice",
+             "keyRisk": "Biggest risk"
            }`
         : `分析 ${marketName} 今日行情。
-           1. 获取最新指数数据: ${indicesRequest}。确保数据实时。
-           2. 深度分析板块轮动: 资金到底在怎么动？
+           1. 获取**实时**指数数据: ${indicesRequest}。
+           2. **核心要求**: 对于每个指数，你必须返回数据对应的具体时间 (timestamp)，例如 "14:35" (盘中) 或 "12-03 收盘"。如果你获取不到实时数据，请明确标记为 "昨日收盘"。严禁编造数值。
+           3. 深度分析板块轮动: 资金到底在怎么动？
            
            返回 JSON:
            {
              "sentimentScore": 0-100,
              "sentimentText": "情绪短语",
-             "indices": [ {"name": "指数名", "value": "点数", "change": "涨跌幅(如 +1.20%)"} ], 
+             "indices": [ {"name": "指数名", "value": "点数", "change": "涨跌幅", "timestamp": "数据时间(如 14:35)"} ], 
              "hotSectors": ["热门板块1", "热门板块2", "热门板块3"],
              "rotationAnalysis": {
-                "inflow": "资金流入的主战场 (如: 低估值中字头)",
-                "outflow": "资金流出的避险区 (如: 高位科技股)",
-                "logic": "轮动背后的深度逻辑 (如: 避险情绪升温，防御板块受宠)"
+                "inflow": "资金流入的主战场",
+                "outflow": "资金流出的避险区",
+                "logic": "轮动背后的深度逻辑"
              },
              "monthlyStrategy": "${month}月核心策略",
              "keyRisk": "当前最大风险"
@@ -156,7 +158,7 @@ export const fetchMarketOverview = async (market: Market, lang: Language): Promi
             model: modelId,
             config: {
                 tools: [{ googleSearch: {} }],
-                temperature: 0.2,
+                temperature: 0.1, // Lower temperature for accuracy
                 systemInstruction: systemInstruction,
             },
         });
@@ -178,43 +180,75 @@ export const fetchMarketOverview = async (market: Market, lang: Language): Promi
     }
 };
 
-// --- DEEP MACRO ANALYSIS SERVICE (New) ---
+// --- DEEP MACRO ANALYSIS SERVICE ---
 export const fetchDeepMacroAnalysis = async (market: Market, lang: Language): Promise<DeepMacroAnalysis> => {
     const modelId = "gemini-2.5-flash";
     const marketName = MARKET_CONFIG[lang][market];
 
     const systemInstruction = lang === 'en'
-        ? `You are a Senior Portfolio Manager. Analyze the style rotation between "Defensive/Value" (Main Board) and "Growth/Tech" (Startup Board) in ${marketName}. Provide a decisive strategy and portfolio allocation.`
-        : `你是一位资深基金经理。请深度分析 ${marketName} 中“主板/价值/防守”与“科创/成长/进攻”之间的风格切换逻辑。给出明确的调仓建议和仓位配比模型。`;
+        ? `You are a Senior Portfolio Manager. Analyze the style rotation in ${marketName}. 
+           IMPORTANT: When analyzing "Growth/Tech", DO NOT limit yourself to Startup Boards (e.g., STAR/ChiNext). 
+           You MUST include Main Board Growth Stocks (e.g., Shanghai 600xxx, Shenzhen 000xxx) such as big semi, auto, or electronics leaders.`
+        : `你是一位资深基金经理。请深度分析 ${marketName} 中“价值/防守”与“成长/进攻”之间的风格切换逻辑。
+           **核心指令**: 
+           在分析“科技/成长”方向时，**严禁**局限于科创板(688)或创业板(300)。
+           你**必须**扫描**主板 (600/000)** 中的成长赛道（如：主板的半导体龙头、消费电子、汽车智能化、CPO等），并将其纳入配置建议中。
+           A股的主板成长股往往具有更好的流动性和确定性。`;
 
     const prompt = lang === 'en'
-        ? `Compare Main Board vs Tech Sectors today. Should I switch styles?
+        ? `Compare Main Board Value vs Broad Growth (Main Board & Tech Board) today. 
            Return strict JSON:
            {
              "mainBoard": { "opportunity": "...", "recommendedSectors": ["..."], "logic": "..." },
              "techGrowth": { "opportunity": "...", "recommendedSectors": ["..."], "logic": "..." },
              "strategy": "SWITCH_TO_MAIN" | "SWITCH_TO_TECH" | "BALANCE" | "DEFENSIVE",
-             "summary": "Actionable advice in 1 sentence.",
-             "suggestedAllocation": [
-                { "category": "Aggressive/Growth", "percentage": 30, "rationale": "Why this %?", "examples": ["Sector1", "Sector2"] },
-                { "category": "Defensive/Value", "percentage": 50, "rationale": "Why this %?", "examples": ["Sector3"] },
-                { "category": "Cash/Hedging", "percentage": 20, "rationale": "Why this %?", "examples": ["Bonds/Gold"] }
-             ]
+             "summary": "Actionable advice.",
+             "profiles": {
+                "aggressive": {
+                    "description": "Focus on High Growth (STAR + Main Board Growth)",
+                    "allocations": [
+                         { "category": "Core Growth (Main Board)", "percentage": 40, "rationale": "...", "examples": ["60xxxx Semi", "00xxxx Auto"] },
+                         { "category": "High Beta (STAR/ChiNext)", "percentage": 30, "rationale": "...", "examples": ["688xxx AI"] },
+                         { "category": "Cash", "percentage": 30, "rationale": "...", "examples": [""] }
+                    ]
+                },
+                "balanced": {
+                    "description": "Steady growth + Value",
+                    "allocations": [
+                         { "category": "Defensive Value", "percentage": 40, "rationale": "...", "examples": ["Banks"] },
+                         { "category": "Main Board Growth", "percentage": 40, "rationale": "...", "examples": ["Electronics"] },
+                         { "category": "Cash", "percentage": 20, "rationale": "...", "examples": ["Bonds"] }
+                    ]
+                }
+             }
            }`
-        : `对比今日主板蓝筹与科创成长的表现。资金在向哪边倾斜？
+        : `对比今日“主板价值”与“全域成长（包含科创板及主板成长股）”的表现。
            返回严格 JSON:
            {
-             "mainBoard": { "opportunity": "主板机会点", "recommendedSectors": ["板块A", "板块B"], "logic": "看好理由" },
-             "techGrowth": { "opportunity": "成长/科创机会点", "recommendedSectors": ["板块C", "板块D"], "logic": "看好理由" },
-             "strategy": "SWITCH_TO_MAIN" (切向主板) | "SWITCH_TO_TECH" (切向成长) | "BALANCE" (均衡配置) | "DEFENSIVE" (全面防守),
+             "mainBoard": { "opportunity": "主板价值/红利机会", "recommendedSectors": ["板块A"], "logic": "看好理由" },
+             "techGrowth": { "opportunity": "全域成长(主板+科创)", "recommendedSectors": ["板块B"], "logic": "看好理由" },
+             "strategy": "SWITCH_TO_MAIN" | "SWITCH_TO_TECH" | "BALANCE" | "DEFENSIVE",
              "summary": "一句话实战建议",
-             "suggestedAllocation": [
-                { "category": "进攻/成长仓 (如科技)", "percentage": 30, "rationale": "简短理由", "examples": ["半导体", "AI"] },
-                { "category": "稳健/防守仓 (如红利)", "percentage": 50, "rationale": "简短理由", "examples": ["银行", "煤炭"] },
-                { "category": "现金/对冲", "percentage": 20, "rationale": "简短理由", "examples": ["逆回购"] }
-             ]
+             "profiles": {
+                "aggressive": {
+                    "description": "激进型：全攻态势，覆盖科创弹性与主板核心成长",
+                    "allocations": [
+                         { "category": "核心成长 (主板600/000)", "percentage": 40, "rationale": "理由", "examples": ["CPO龙头", "汽车电子"] },
+                         { "category": "高弹性 (科创688/创业300)", "percentage": 30, "rationale": "理由", "examples": ["半导体设备", "AI应用"] },
+                         { "category": "轮动/周期", "percentage": 30, "rationale": "理由", "examples": ["有色"] }
+                    ]
+                },
+                "balanced": {
+                    "description": "平衡型：主板蓝筹打底，主板成长股增强",
+                    "allocations": [
+                         { "category": "底仓/防守 (红利/大金融)", "percentage": 40, "rationale": "理由", "examples": ["银行", "电力"] },
+                         { "category": "稳健成长 (主板白马)", "percentage": 40, "rationale": "理由", "examples": ["立讯精密", "中际旭创"] },
+                         { "category": "现金/债券", "percentage": 20, "rationale": "理由", "examples": ["逆回购"] }
+                    ]
+                }
+             }
            }
-           注意：suggestedAllocation 中的 percentage 总和必须为 100。`;
+           注意：allocations 中的 percentage 总和必须为 100。`;
 
     try {
         const ai = getGenAIClient();
@@ -236,6 +270,85 @@ export const fetchDeepMacroAnalysis = async (market: Market, lang: Language): Pr
     } catch (e) {
         console.error("Deep Macro Error", e);
         throw new Error("Failed to perform deep macro analysis.");
+    }
+};
+
+// --- TRADE SETUP BY HORIZON SERVICE ---
+export const fetchTradeSetupByHorizon = async (
+    stockCode: string,
+    market: Market,
+    horizon: TimeHorizon,
+    lang: Language
+): Promise<TradeSetup> => {
+    const modelId = "gemini-2.5-flash";
+    const marketName = MARKET_CONFIG[lang][market];
+
+    let horizonContext = "";
+    if (lang === 'zh') {
+        if (horizon === 'SHORT') horizonContext = "短线策略 (1个月内): 关注日线/60分钟线。重点: 快进快出, 支撑位低吸, 压力位止盈。";
+        if (horizon === 'MEDIUM') horizonContext = "中线波段 (2-4个月): 关注周线/日线趋势。重点: 均线多头排列, 回踩确认, 趋势跟踪。";
+        if (horizon === 'LONG') horizonContext = "长线配置 (6个月+): 关注月线/基本面估值。重点: 价值发现, 分批建仓, 穿越牛熊。";
+    } else {
+        if (horizon === 'SHORT') horizonContext = "Short-Term (Within 1 Month): Focus on 60min/Daily charts. High frequency, tight stops.";
+        if (horizon === 'MEDIUM') horizonContext = "Mid-Term (2-4 Months): Focus on Weekly/Daily trends. Swing trading, trend following.";
+        if (horizon === 'LONG') horizonContext = "Long-Term (6 Months+): Focus on Monthly/Fundamentals. Value investing, DCA.";
+    }
+
+    const systemInstruction = lang === 'en'
+        ? `You are a Technical Trading Specialist. Provide a precise Trade Setup for ${stockCode} based on ${horizonContext}.`
+        : `你是一位技术交易专家。请为 ${stockCode} 制定一个精准的交易计划。
+           **当前时间维度**: ${horizonContext}
+           请基于该时间维度的技术指标（如短线看KDJ/布林带，中线看MACD/均线系统）给出具体的点位。`;
+
+    const prompt = lang === 'en'
+        ? `Analyze ${stockCode} for ${horizon} horizon.
+           Return strict JSON:
+           {
+             "horizon": "${horizon}",
+             "recommendation": "BUY" | "SELL" | "WAIT",
+             "entryZone": "e.g. 20.50 - 20.80",
+             "invalidLevel": "Price level that invalidates this logic (Stop Loss)",
+             "targetLevel": "Expected price target",
+             "technicalRationale": "Why these levels? (Max 15 words)",
+             "updatedData": {
+                 "signal": "BUY", "confidence": 80, "entryPrice": 20.65, "stopLoss": 19.80, "targetPrice": 22.50
+             }
+           }`
+        : `请分析 ${stockCode} 的 ${horizon} 交易机会。
+           返回严格 JSON:
+           {
+             "horizon": "${horizon}",
+             "recommendation": "BUY" | "SELL" | "WAIT",
+             "entryZone": "如 20.50 - 20.80 (区间)",
+             "invalidLevel": "跌破哪里逻辑失效 (止损位)",
+             "targetLevel": "预期目标位 (止盈位)",
+             "technicalRationale": "极简技术理由 (不超过20字, 如'回踩60日线获支撑')",
+             "updatedData": {
+                 "signal": "BUY", "confidence": 80, "entryPrice": 20.65, "stopLoss": 19.80, "targetPrice": 22.50
+             }
+           }
+           注意: updatedData 中的数值必须是数字类型，用于更新计算器。`;
+
+    try {
+        const ai = getGenAIClient();
+        const chat = ai.chats.create({
+            model: modelId,
+            config: {
+                tools: [{ googleSearch: {} }],
+                temperature: 0.1,
+                systemInstruction: systemInstruction,
+            },
+        });
+
+        const response = await chat.sendMessage({ message: prompt });
+        const text = response.text || "{}";
+        const data = safeJsonParse(text);
+        
+        if (!data || !data.updatedData) throw new Error("Invalid Trade Setup Data");
+        return data as TradeSetup;
+    } catch (e) {
+        console.error("Trade Setup Error", e);
+        throw new Error("Failed to generate trade setup.");
     }
 };
 
