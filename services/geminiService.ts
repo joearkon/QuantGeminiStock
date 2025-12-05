@@ -23,6 +23,7 @@ export interface ChatSessionResult {
 // Helper to safely initialize the client only when needed
 const getGenAIClient = () => {
   let apiKey = '';
+  let baseUrl = '';
 
   // Helper to try getting a value safely without throwing ReferenceError
   const tryGet = (fn: () => string | undefined) => {
@@ -46,12 +47,30 @@ const getGenAIClient = () => {
     tryGet(() => import.meta.env?.NEXT_PUBLIC_API_KEY) ||
     '';
 
+  // Attempt to find Base URL (Proxy)
+  baseUrl = 
+    tryGet(() => process.env.GEMINI_BASE_URL) ||
+    tryGet(() => process.env.VITE_GEMINI_BASE_URL) ||
+    tryGet(() => process.env.NEXT_PUBLIC_GEMINI_BASE_URL) ||
+    // @ts-ignore
+    tryGet(() => import.meta.env?.GEMINI_BASE_URL) ||
+    // @ts-ignore
+    tryGet(() => import.meta.env?.VITE_GEMINI_BASE_URL) ||
+    '';
+
   if (!apiKey) {
     console.error("Gemini API Key missing. Please check your environment variables.");
     throw new Error("API Key is missing. Ensure 'API_KEY' (or 'VITE_API_KEY' for Vite) is set in your environment.");
   }
 
-  return new GoogleGenAI({ apiKey });
+  // Construct options. If baseUrl is present, it will override the default.
+  const options: any = { apiKey };
+  if (baseUrl) {
+      // Ensure no trailing slash if the SDK strictly joins paths
+      options.baseUrl = baseUrl.replace(/\/$/, "");
+  }
+
+  return new GoogleGenAI(options);
 };
 
 // Robust JSON Parsing Helper
