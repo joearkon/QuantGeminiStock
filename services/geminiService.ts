@@ -25,7 +25,6 @@ const getGenAIClient = () => {
   let apiKey = '';
   let baseUrl = '';
 
-  // Helper to try getting a value safely without throwing ReferenceError
   const tryGet = (fn: () => string | undefined) => {
     try {
       return fn();
@@ -34,7 +33,7 @@ const getGenAIClient = () => {
     }
   };
 
-  // Attempt to find the API Key in various common locations.
+  // 读取API Key
   apiKey = 
     tryGet(() => process.env.API_KEY) ||
     tryGet(() => process.env.VITE_API_KEY) ||
@@ -47,7 +46,7 @@ const getGenAIClient = () => {
     tryGet(() => import.meta.env?.NEXT_PUBLIC_GEMINI_API_KEY) ||
     '';
 
-  // 修正代理地址（包含/v1beta路径前缀）
+  // 读取代理地址（包含/v1beta路径）
   baseUrl = 
     tryGet(() => process.env.GEMINI_BASE_URL) ||
     tryGet(() => process.env.VITE_GEMINI_BASE_URL) ||
@@ -60,24 +59,18 @@ const getGenAIClient = () => {
 
   if (!apiKey) {
     console.error("Gemini API Key missing. Please check your environment variables.");
-    throw new Error("API Key is missing. Ensure 'API_KEY' (or 'VITE_API_KEY' for Vite) is set in your environment.");
+    throw new Error("API Key is missing.");
   }
 
-  // 修正SDK的baseUrl配置方式（嵌套在clientOptions中）
+  // ========== 核心修正：用SDK官方的apiEndpoint参数 ==========
   const genAiOptions: any = {
     apiKey,
-    clientOptions: {
-      baseUrl: baseUrl.replace(/\/$/, "") // 确保无末尾斜杠
-    }
+    apiEndpoint: baseUrl.replace(/\/$/, "") // 这是SDK识别的自定义API地址参数
   };
 
-  // 安全的调试日志：打印代理地址，确认配置生效
-  console.log("✅ Gemini代理地址已配置:", genAiOptions.clientOptions.baseUrl);
+  console.log("✅ Gemini代理地址已配置（apiEndpoint）:", genAiOptions.apiEndpoint);
 
   const genAI = new GoogleGenAI(genAiOptions);
-
-  // ========== 移除覆盖fetch的代码（浏览器中fetch是只读的） ==========
-  // 改用浏览器开发者工具的“网络”面板查看请求地址
 
   return genAI;
 };
