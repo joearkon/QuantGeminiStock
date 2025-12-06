@@ -9,7 +9,7 @@ import { Chat } from '@google/genai';
 
 const TRANSLATIONS = {
   en: {
-    subtitle: "Global Quant v2.6",
+    subtitle: "Global Quant v2.6 (Base)",
     analyzeBtn: "Analyze",
     newAnalysis: "New Analysis",
     sources: "Live Data Sources",
@@ -88,7 +88,7 @@ const TRANSLATIONS = {
     }
   },
   zh: {
-    subtitle: "全球量化系统 v2.6",
+    subtitle: "全球量化系统 v2.6 (Base)",
     analyzeBtn: "开始分析",
     newAnalysis: "重新分析",
     sources: "实时数据源",
@@ -308,9 +308,12 @@ const App: React.FC = () => {
 
   // Helper: Color logic for trends based on Market
   // A-Share: Red=Up, Green=Down. Global: Green=Up, Red=Down.
-  const getTrendColor = (changeStr: string, isText: boolean = true) => {
-      const isNegative = changeStr.includes('-');
-      const isPositive = !isNegative && (changeStr.includes('+') || parseFloat(changeStr) > 0);
+  const getTrendColor = (changeStr: string | undefined | null, isText: boolean = true) => {
+      if (!changeStr) return isText ? 'text-slate-500' : 'bg-slate-700';
+      
+      const strVal = String(changeStr);
+      const isNegative = strVal.includes('-');
+      const isPositive = !isNegative && (strVal.includes('+') || parseFloat(strVal) > 0);
       
       if (market === 'A_SHARE') {
           // Chinese Style
@@ -806,6 +809,9 @@ const App: React.FC = () => {
 
             {/* 1B. COMMAND CENTER DASHBOARD */}
             <div className="max-w-5xl mx-auto mb-10">
+                <div className="text-center mb-6">
+                    <h2 className="text-sm font-mono text-slate-500 tracking-widest uppercase">{t.subtitle}</h2>
+                </div>
                 {isPulseLoading ? (
                     <div className="flex justify-center items-center py-20 bg-slate-900/20 rounded-2xl border border-slate-800/50">
                         <span className="animate-pulse text-slate-500 font-mono text-sm">{t.marketDashboard.loading}</span>
