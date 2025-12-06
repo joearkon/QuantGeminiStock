@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Chat, GenerateContentResponse, Type, Schema } from "@google/genai";
 import { AnalysisResult, Language, Market, AnalysisMode, StructuredAnalysisData, BatchItem, MarketOverview, DeepMacroAnalysis, TimeHorizon, TradeSetup } from "../types";
 
@@ -20,11 +21,11 @@ export interface ChatSessionResult {
 }
 
 // Helper to safely initialize the client only when needed
-// Helper to safely initialize the client only when needed
 const getGenAIClient = () => {
   let apiKey = '';
   let baseUrl = '';
 
+  // Helper to try getting a value safely without throwing ReferenceError
   const tryGet = (fn: () => string | undefined) => {
     try {
       return fn();
@@ -33,7 +34,7 @@ const getGenAIClient = () => {
     }
   };
 
-  // 读取API Key
+  // Attempt to find the API Key in various common locations.
   apiKey = 
     tryGet(() => process.env.API_KEY) ||
     tryGet(() => process.env.VITE_API_KEY) ||
@@ -43,10 +44,11 @@ const getGenAIClient = () => {
     // @ts-ignore
     tryGet(() => import.meta.env?.VITE_API_KEY) ||
     // @ts-ignore
-    tryGet(() => import.meta.env?.NEXT_PUBLIC_GEMINI_API_KEY) ||
+    tryGet(() => import.meta.env?.NEXT_PUBLIC_API_KEY) ||
     '';
 
-  // 读取代理地址（包含/v1beta路径）
+  // Attempt to find Base URL (Proxy)
+  // We prioritize Environment Variables, but fall back to the user's custom proxy if missing.
   baseUrl = 
     tryGet(() => process.env.GEMINI_BASE_URL) ||
     tryGet(() => process.env.VITE_GEMINI_BASE_URL) ||
@@ -55,27 +57,23 @@ const getGenAIClient = () => {
     tryGet(() => import.meta.env?.GEMINI_BASE_URL) ||
     // @ts-ignore
     tryGet(() => import.meta.env?.VITE_GEMINI_BASE_URL) ||
-    'https://gemini.kunkun1023.xyz/v1beta';
+    'https://gemini.kunkun1023.xyz'; // Default Fallback to User's Proxy
 
   if (!apiKey) {
     console.error("Gemini API Key missing. Please check your environment variables.");
-    throw new Error("API Key is missing.");
+    throw new Error("API Key is missing. Ensure 'API_KEY' (or 'VITE_API_KEY' for Vite) is set in your environment.");
   }
 
-  // ========== 核心修正：用SDK官方的apiEndpoint参数 ==========
-  const genAiOptions: any = {
-    apiKey,
-    apiEndpoint: baseUrl.replace(/\/$/, "") // 这是SDK识别的自定义API地址参数
-  };
+  // Construct options. If baseUrl is present, it will override the default.
+  const options: any = { apiKey };
+  if (baseUrl) {
+      // Ensure no trailing slash if the SDK strictly joins paths
+      options.baseUrl = baseUrl.replace(/\/$/, "");
+  }
 
-  console.log("✅ Gemini代理地址已配置（apiEndpoint）:", genAiOptions.apiEndpoint);
-
-  const genAI = new GoogleGenAI(genAiOptions);
-
-  return genAI;
+  return new GoogleGenAI(options);
 };
 
-// 【以下代码和原逻辑一致，无需修改】
 // Robust JSON Parsing Helper
 const safeJsonParse = (text: string): any => {
     try {
