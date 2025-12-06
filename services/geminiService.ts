@@ -50,15 +50,14 @@ const getGenAIClient = () => {
   // Attempt to find Base URL (Proxy)
   // We prioritize Environment Variables, but fall back to the user's custom proxy if missing.
   baseUrl = 
-    //tryGet(() => process.env.GEMINI_BASE_URL) ||
-    //tryGet(() => process.env.VITE_GEMINI_BASE_URL) ||
-    //tryGet(() => process.env.NEXT_PUBLIC_GEMINI_BASE_URL) ||
+    tryGet(() => process.env.GEMINI_BASE_URL) ||
+    tryGet(() => process.env.VITE_GEMINI_BASE_URL) ||
+    tryGet(() => process.env.NEXT_PUBLIC_GEMINI_BASE_URL) ||
     // @ts-ignore
-    //tryGet(() => import.meta.env?.GEMINI_BASE_URL) ||
+    tryGet(() => import.meta.env?.GEMINI_BASE_URL) ||
     // @ts-ignore
-    //tryGet(() => import.meta.env?.VITE_GEMINI_BASE_URL) ||
+    tryGet(() => import.meta.env?.VITE_GEMINI_BASE_URL) ||
     'https://gemini.kunkun1023.xyz'; // Default Fallback to User's Proxy
-    console.info(baseUrl);
 
   if (!apiKey) {
     console.error("Gemini API Key missing. Please check your environment variables.");
@@ -71,7 +70,7 @@ const getGenAIClient = () => {
       // Ensure no trailing slash if the SDK strictly joins paths
       options.baseUrl = baseUrl.replace(/\/$/, "");
   }
-  console.info(options)
+
   return new GoogleGenAI(options);
 };
 
