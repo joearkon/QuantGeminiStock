@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, Chat, GenerateContentResponse, Type, Schema } from "@google/genai";
 import { AnalysisResult, Language, Market, AnalysisMode, StructuredAnalysisData, BatchItem, MarketOverview, DeepMacroAnalysis, TimeHorizon, TradeSetup } from "../types";
 
@@ -20,6 +19,7 @@ export interface ChatSessionResult {
   chat: Chat | null; // Batch mode might not have a persistent chat session
 }
 
+// Helper to safely initialize the client only when needed
 // Helper to safely initialize the client only when needed
 const getGenAIClient = () => {
   let apiKey = '';
@@ -44,11 +44,10 @@ const getGenAIClient = () => {
     // @ts-ignore
     tryGet(() => import.meta.env?.VITE_API_KEY) ||
     // @ts-ignore
-    tryGet(() => import.meta.env?.NEXT_PUBLIC_API_KEY) ||
+    tryGet(() => import.meta.env?.NEXT_PUBLIC_GEMINI_API_KEY) ||
     '';
 
-  // Attempt to find Base URL (Proxy)
-  // We prioritize Environment Variables, but fall back to the user's custom proxy if missing.
+  // 修正代理地址（包含/v1beta路径前缀）
   baseUrl = 
     tryGet(() => process.env.GEMINI_BASE_URL) ||
     tryGet(() => process.env.VITE_GEMINI_BASE_URL) ||
@@ -57,23 +56,33 @@ const getGenAIClient = () => {
     tryGet(() => import.meta.env?.GEMINI_BASE_URL) ||
     // @ts-ignore
     tryGet(() => import.meta.env?.VITE_GEMINI_BASE_URL) ||
-    'https://gemini.kunkun1023.xyz'; // Default Fallback to User's Proxy
+    'https://gemini.kunkun1023.xyz/v1beta';
 
   if (!apiKey) {
     console.error("Gemini API Key missing. Please check your environment variables.");
     throw new Error("API Key is missing. Ensure 'API_KEY' (or 'VITE_API_KEY' for Vite) is set in your environment.");
   }
 
-  // Construct options. If baseUrl is present, it will override the default.
-  const options: any = { apiKey };
-  if (baseUrl) {
-      // Ensure no trailing slash if the SDK strictly joins paths
-      options.baseUrl = baseUrl.replace(/\/$/, "");
-  }
+  // 修正SDK的baseUrl配置方式（嵌套在clientOptions中）
+  const genAiOptions: any = {
+    apiKey,
+    clientOptions: {
+      baseUrl: baseUrl.replace(/\/$/, "") // 确保无末尾斜杠
+    }
+  };
 
-  return new GoogleGenAI(options);
+  // 安全的调试日志：打印代理地址，确认配置生效
+  console.log("✅ Gemini代理地址已配置:", genAiOptions.clientOptions.baseUrl);
+
+  const genAI = new GoogleGenAI(genAiOptions);
+
+  // ========== 移除覆盖fetch的代码（浏览器中fetch是只读的） ==========
+  // 改用浏览器开发者工具的“网络”面板查看请求地址
+
+  return genAI;
 };
 
+// 【以下代码和原逻辑一致，无需修改】
 // Robust JSON Parsing Helper
 const safeJsonParse = (text: string): any => {
     try {
