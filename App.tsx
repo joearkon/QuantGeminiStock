@@ -251,8 +251,6 @@ const App: React.FC = () => {
           setMarketPulse(data);
       } catch (e) {
           console.warn("Market Pulse failed", e);
-          // Don't set main Error state here to avoid blocking the whole app, just log it.
-          // Or set a small warning
       } finally {
           setIsPulseLoading(false);
       }
@@ -265,9 +263,10 @@ const App: React.FC = () => {
       setIsTestingConnection(false);
   };
 
-  const getTrendColor = (changeStr: string = "", isText: boolean = true) => {
-      if (!changeStr) return isText ? 'text-slate-500' : 'bg-slate-700';
-      const isNegative = changeStr.includes('-');
+  const getTrendColor = (changeStr: any, isText: boolean = true) => {
+      const safeStr = String(changeStr || "");
+      if (!safeStr) return isText ? 'text-slate-500' : 'bg-slate-700';
+      const isNegative = safeStr.includes('-');
       if (market === 'A_SHARE') {
           if (isNegative) return isText ? 'text-emerald-400' : 'bg-emerald-500';
           return isText ? 'text-rose-400' : 'bg-rose-500';
@@ -495,12 +494,12 @@ const App: React.FC = () => {
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                              {marketPulse.indices?.map((idx, i) => (
                                  <div key={i} className="bg-slate-900/80 border border-slate-800 p-4 rounded-xl flex justify-between items-center">
-                                     <div className="font-bold text-slate-400 text-xs uppercase">{idx?.name}</div>
+                                     <div className="font-bold text-slate-400 text-xs uppercase">{idx?.name || "Index"}</div>
                                      <div className="text-right">
-                                         <div className="text-white font-mono font-bold text-lg">{idx?.value}</div>
+                                         <div className="text-white font-mono font-bold text-lg">{idx?.value || "-"}</div>
                                          <div className="flex items-center justify-end gap-2">
-                                             <div className={`text-xs font-mono font-bold ${getTrendColor(idx?.change)}`}>{idx?.change}</div>
-                                             <div className={`text-[9px] font-mono border px-1 rounded ${idx?.timestamp?.includes('Close') || idx?.timestamp?.includes('昨日') ? 'text-yellow-500 border-yellow-900/30' : 'text-slate-500 border-slate-700'}`}>{idx?.timestamp}</div>
+                                             <div className={`text-xs font-mono font-bold ${getTrendColor(idx?.change)}`}>{idx?.change || "0%"}</div>
+                                             <div className={`text-[9px] font-mono border px-1 rounded ${idx?.timestamp?.includes('Close') || idx?.timestamp?.includes('昨日') ? 'text-yellow-500 border-yellow-900/30' : 'text-slate-500 border-slate-700'}`}>{idx?.timestamp || "N/A"}</div>
                                          </div>
                                      </div>
                                  </div>
@@ -509,8 +508,8 @@ const App: React.FC = () => {
                         <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                             <div className="bg-slate-900/50 border border-slate-800 p-5 rounded-2xl">
                                 <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">{t.marketDashboard.sentiment}</h4>
-                                <span className={`text-4xl font-bold ${marketPulse.sentimentScore > 75 ? 'text-rose-400' : marketPulse.sentimentScore < 25 ? 'text-emerald-400' : 'text-yellow-400'}`}>{marketPulse.sentimentScore}</span>
-                                <div className="text-sm text-white font-medium mt-1">{marketPulse.sentimentText}</div>
+                                <span className={`text-4xl font-bold ${marketPulse.sentimentScore > 75 ? 'text-rose-400' : marketPulse.sentimentScore < 25 ? 'text-emerald-400' : 'text-yellow-400'}`}>{marketPulse.sentimentScore ?? 50}</span>
+                                <div className="text-sm text-white font-medium mt-1">{marketPulse.sentimentText || "Neutral"}</div>
                                 <div className="w-full h-1 bg-slate-800 rounded-full mt-3 overflow-hidden"><div className={`h-full rounded-full ${marketPulse.sentimentScore > 75 ? 'bg-rose-500' : marketPulse.sentimentScore < 25 ? 'bg-emerald-500' : 'bg-yellow-500'}`} style={{width: `${marketPulse.sentimentScore}%`}}></div></div>
                             </div>
                             <div className="bg-slate-900/50 border border-slate-800 p-5 rounded-2xl flex flex-col">
@@ -518,16 +517,16 @@ const App: React.FC = () => {
                                 <div className="space-y-3 flex-1">
                                     {typeof marketPulse.rotationAnalysis === 'object' ? (
                                         <>
-                                            <div className="text-xs flex justify-between border-b border-slate-800 pb-2"><span className="text-slate-500">INFLOW</span><span className="text-emerald-400 font-bold text-right">{marketPulse.rotationAnalysis.inflow}</span></div>
-                                            <div className="text-xs flex justify-between border-b border-slate-800 pb-2"><span className="text-slate-500">OUTFLOW</span><span className="text-rose-400 font-bold text-right">{marketPulse.rotationAnalysis.outflow}</span></div>
-                                            <p className="text-[10px] text-blue-200 italic mt-1">{marketPulse.rotationAnalysis.logic}</p>
+                                            <div className="text-xs flex justify-between border-b border-slate-800 pb-2"><span className="text-slate-500">INFLOW</span><span className="text-emerald-400 font-bold text-right">{marketPulse.rotationAnalysis?.inflow || "-"}</span></div>
+                                            <div className="text-xs flex justify-between border-b border-slate-800 pb-2"><span className="text-slate-500">OUTFLOW</span><span className="text-rose-400 font-bold text-right">{marketPulse.rotationAnalysis?.outflow || "-"}</span></div>
+                                            <p className="text-[10px] text-blue-200 italic mt-1">{marketPulse.rotationAnalysis?.logic || ""}</p>
                                         </>
-                                    ) : <p className="text-sm text-blue-200">{marketPulse.rotationAnalysis}</p>}
+                                    ) : <p className="text-sm text-blue-200">{marketPulse.rotationAnalysis || "-"}</p>}
                                 </div>
                             </div>
                             <div className="bg-slate-900/50 border border-slate-800 p-5 rounded-2xl">
                                 <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">{t.marketDashboard.hot}</h4>
-                                <div className="flex flex-wrap gap-2 mb-4">{marketPulse.hotSectors.map((sec, i) => <span key={i} className="px-2 py-1 bg-slate-800 text-slate-300 text-[10px] rounded border border-slate-700">{sec}</span>)}</div>
+                                <div className="flex flex-wrap gap-2 mb-4">{marketPulse.hotSectors?.map((sec, i) => <span key={i} className="px-2 py-1 bg-slate-800 text-slate-300 text-[10px] rounded border border-slate-700">{sec}</span>)}</div>
                                 <p className="text-xs text-slate-400 line-clamp-2">{marketPulse.monthlyStrategy}</p>
                             </div>
                         </div>
@@ -542,20 +541,20 @@ const App: React.FC = () => {
                         <div className="flex items-center gap-2"><span className="text-purple-400">⚡</span><h3 className="font-bold text-sm text-slate-300 uppercase tracking-wider">{t.marketDashboard.deepDive}</h3></div>
                         {!deepAnalysis && <button onClick={handleDeepMacroAnalysis} disabled={isDeepAnalyzing} className="px-3 py-1.5 bg-purple-900/20 hover:bg-purple-900/40 text-purple-300 text-xs font-bold rounded border border-purple-900/50 transition-colors disabled:opacity-50">{isDeepAnalyzing ? t.marketDashboard.deepLoading : t.marketDashboard.analyzeDeep}</button>}
                     </div>
-                    {deepAnalysis && (
+                    {deepAnalysis && deepAnalysis.mainBoard && deepAnalysis.techGrowth && (
                         <div className="p-6 animate-fade-in">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mb-6">
-                                <div className={`p-4 rounded-xl border ${deepAnalysis.strategy.includes('MAIN') ? 'bg-blue-900/20 border-blue-500/50' : 'bg-slate-900/50 border-slate-800'}`}>
+                                <div className={`p-4 rounded-xl border ${deepAnalysis.strategy?.includes('MAIN') ? 'bg-blue-900/20 border-blue-500/50' : 'bg-slate-900/50 border-slate-800'}`}>
                                     <h4 className="text-sm font-bold text-blue-400 mb-2">Main Board</h4>
-                                    <div className="text-sm text-white font-medium mb-3">{deepAnalysis.mainBoard.opportunity}</div>
-                                    <p className="text-xs text-slate-300 mb-4">{deepAnalysis.mainBoard.logic}</p>
-                                    <div className="flex flex-wrap gap-2">{deepAnalysis.mainBoard.recommendedSectors.map((s, i) => <span key={i} className="text-[10px] px-2 py-0.5 bg-blue-950 text-blue-300 rounded border border-blue-900">{s}</span>)}</div>
+                                    <div className="text-sm text-white font-medium mb-3">{deepAnalysis.mainBoard?.opportunity}</div>
+                                    <p className="text-xs text-slate-300 mb-4">{deepAnalysis.mainBoard?.logic}</p>
+                                    <div className="flex flex-wrap gap-2">{deepAnalysis.mainBoard?.recommendedSectors?.map((s, i) => <span key={i} className="text-[10px] px-2 py-0.5 bg-blue-950 text-blue-300 rounded border border-blue-900">{s}</span>)}</div>
                                 </div>
-                                <div className={`p-4 rounded-xl border ${deepAnalysis.strategy.includes('TECH') ? 'bg-purple-900/20 border-purple-500/50' : 'bg-slate-900/50 border-slate-800'}`}>
+                                <div className={`p-4 rounded-xl border ${deepAnalysis.strategy?.includes('TECH') ? 'bg-purple-900/20 border-purple-500/50' : 'bg-slate-900/50 border-slate-800'}`}>
                                     <h4 className="text-sm font-bold text-purple-400 mb-2">Tech / Growth</h4>
-                                    <div className="text-sm text-white font-medium mb-3">{deepAnalysis.techGrowth.opportunity}</div>
-                                    <p className="text-xs text-slate-300 mb-4">{deepAnalysis.techGrowth.logic}</p>
-                                    <div className="flex flex-wrap gap-2">{deepAnalysis.techGrowth.recommendedSectors.map((s, i) => <span key={i} className="text-[10px] px-2 py-0.5 bg-purple-950 text-purple-300 rounded border border-purple-900">{s}</span>)}</div>
+                                    <div className="text-sm text-white font-medium mb-3">{deepAnalysis.techGrowth?.opportunity}</div>
+                                    <p className="text-xs text-slate-300 mb-4">{deepAnalysis.techGrowth?.logic}</p>
+                                    <div className="flex flex-wrap gap-2">{deepAnalysis.techGrowth?.recommendedSectors?.map((s, i) => <span key={i} className="text-[10px] px-2 py-0.5 bg-purple-950 text-purple-300 rounded border border-purple-900">{s}</span>)}</div>
                                 </div>
                             </div>
                             <div className="bg-slate-900 p-4 rounded-xl border-l-4 border-emerald-500 mb-6">
@@ -575,17 +574,17 @@ const App: React.FC = () => {
                                         <div className="animate-fade-in">
                                             <p className="text-sm text-slate-300 mb-4 italic pl-2 border-l-2 border-slate-700">"{currentProfile.description}"</p>
                                             <div className="h-4 w-full rounded-full overflow-hidden flex mb-4 border border-slate-800 bg-slate-900">
-                                                {currentProfile.allocations.map((bucket, i) => {
+                                                {currentProfile.allocations?.map((bucket, i) => {
                                                     const colors = activeProfile === 'AGGRESSIVE' ? ['bg-purple-500', 'bg-rose-500', 'bg-slate-600'] : ['bg-blue-500', 'bg-emerald-500', 'bg-slate-600'];
                                                     return <div key={i} style={{ width: `${bucket.percentage}%` }} className={`${colors[i % 3]} h-full transition-all duration-500`} title={`${bucket.category}: ${bucket.percentage}%`} />
                                                 })}
                                             </div>
                                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                                {currentProfile.allocations.map((bucket, i) => (
+                                                {currentProfile.allocations?.map((bucket, i) => (
                                                     <div key={i} className="p-3 rounded-lg border bg-slate-900/30 border-slate-800">
                                                         <div className="flex justify-between items-center mb-1"><span className="text-xs font-bold text-slate-300">{bucket.category}</span><span className="text-sm font-mono font-bold text-white">{bucket.percentage}%</span></div>
                                                         <p className="text-[10px] text-slate-400 mb-2 h-8 overflow-hidden">{bucket.rationale}</p>
-                                                        <div className="flex flex-wrap gap-1">{bucket.examples.map((ex, j) => <span key={j} className="text-[9px] px-1.5 py-0.5 bg-slate-800 rounded text-slate-300 border border-slate-700">{ex}</span>)}</div>
+                                                        <div className="flex flex-wrap gap-1">{bucket.examples?.map((ex, j) => <span key={j} className="text-[9px] px-1.5 py-0.5 bg-slate-800 rounded text-slate-300 border border-slate-700">{ex}</span>)}</div>
                                                     </div>
                                                 ))}
                                             </div>
