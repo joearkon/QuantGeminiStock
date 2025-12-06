@@ -48,6 +48,7 @@ const getGenAIClient = () => {
     '';
 
   // Attempt to find Base URL (Proxy)
+  // We prioritize Environment Variables, but fall back to the user's custom proxy if missing.
   baseUrl = 
     tryGet(() => process.env.GEMINI_BASE_URL) ||
     tryGet(() => process.env.VITE_GEMINI_BASE_URL) ||
@@ -56,7 +57,7 @@ const getGenAIClient = () => {
     tryGet(() => import.meta.env?.GEMINI_BASE_URL) ||
     // @ts-ignore
     tryGet(() => import.meta.env?.VITE_GEMINI_BASE_URL) ||
-    '';
+    'https://gemini.kunkun1023.xyz'; // Default Fallback to User's Proxy
 
   if (!apiKey) {
     console.error("Gemini API Key missing. Please check your environment variables.");
